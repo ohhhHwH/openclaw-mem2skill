@@ -1,40 +1,61 @@
-// processor.ts
-import { EventChain, Event, Skill, ConversationContext } from "./types";
-import { storage } from "./storage";
+import { Event, EventChain, Skill, UserFeedback, ConversationContext } from './types';
+import { storage } from './storage';
+import { adapter } from './adapter';
+import { logger } from './logger';
 
-export const processor = {
-  /**
-   * 处理任务结束事件，构建事件链
-   * @param context 对话上下文
-   * @param task 任务对象
-   * @returns 事件链
-   */
-  async processTaskEnd(context: ConversationContext, task: any): Promise<EventChain> {
+export class Processor {
+  private config: any;
+
+  constructor(config: any) {
+    this.config = config;
+  }
+
+  async processTask(task: any): Promise<void> {
     try {
-      // 构建事件链
-      const eventChain: EventChain = {
-        id: `chain_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        taskId: task.id,
-        timestamp: Date.now(),
-        userIntent: context.userIntent,
-        events: this.buildEvents(context),
-        outcome: 'partial', // 初始状态，等待反馈
-        embedding: this.generateDummyEmbedding(), // 实际项目中应使用真实的embedding模型
-      };
+      await logger.info('processor', `Processing task: ${task.id}`);
       
-      return eventChain;
-    } catch (error) {
-      console.error("Error processing task end:", error);
-      throw error;
+      // 1. 提取对话上下文
+      const context = await adapter.extractConversation(task);
+      await logger.debug('processor', 'Conversation context extracted', { taskId: task.id, userIntent: context.userIntent });
+      
+      // 2. 构建事件链
+      const eventChain = this.buildEventChain(task, context);
+      await logger.logEventChain(eventChain);
+      
+      // 3. 存储事件链
+      await storage.storeEventChain(eventChain);
+      await logger.info('processor', `Event chain stored for task: ${task.id}`);
+      
+    } catch (error: any) {
+      await logger.error('processor', 'Error processing task', { taskId: task.id, error: error.message });
     }
-  },
+  }
 
-  /**
-   * 构建事件序列
-   * @param context 对话上下文
-   * @returns 事件数组
-   */
-  buildEvents(context: ConversationContext): Event[] {
+  async processFeedback(taskId: string, feedback: any): Promise<void> {
+    try {
+      await logger.info('processor', `Processing feedback for task: ${taskId}`);
+
+      // 1. 提取用户反馈
+      const userFeedback: UserFeedback = {
+        score: feedback.score || 0,
+        comment: feedback.comment,
+        timestamp: Date.now()
+      };
+      await logger.logFeedback(taskId, userFeedback);
+
+      // 2. 更新事件链的反馈信息
+      await storage.updateEventChainFeedback(taskId, userFeedback);
+      await logger.info('processor', `Event chain feedback updated for task: ${taskId}`);
+
+      // 3. 检查是否需要生成或更新技能
+      await this.checkSkillGeneration(taskId);
+
+    } catch (error: any) {
+      await logger.error('processor', 'Error processing feedback', { taskId, error: error.message });
+    }
+  }
+
+  private buildEventChain(task: any, context: ConversationContext): EventChain {
     const events: Event[] = [];
     
     // 添加用户查询事件
@@ -54,7 +75,7 @@ export const processor = {
     context.toolCalls.forEach(call => {
       events.push({
         type: 'tool_call',
-        content: call.name,
+        content: `调用工具: ${call.name}`,
         metadata: {
           toolName: call.name,
           parameters: call.parameters,
@@ -64,31 +85,39 @@ export const processor = {
       });
     });
     
-    return events;
-  },
+    // 提取工具序列
+    const toolSequence = context.toolCalls.map(call => call.name);
+    
+    return {
+      id: `chain-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      taskId: task.id,
+      timestamp: Date.now(),
+      userIntent: context.userIntent,
+      events,
+      toolSequence,
+      outcome: 'partial', // 初始状态，等待反馈
+      feedback: undefined,
+      embedding: this.generateMockEmbedding(context.userIntent)
+    };
+  }
 
-  /**
-   * 生成虚拟的embedding向量（实际项目中应使用真实的embedding模型）
-   * @returns 向量数组
-   */
-  generateDummyEmbedding(): number[] {
-    // 生成1536维的随机向量
+  private generateMockEmbedding(text: string): number[] {
+    // 生成模拟的向量嵌入
     const embedding: number[] = [];
     for (let i = 0; i < 1536; i++) {
-      embedding.push(Math.random() * 2 - 1); // 范围在[-1, 1]之间
+      embedding.push(Math.random() * 2 - 1);
     }
     return embedding;
-  },
+  }
 
-  /**
-   * 检查是否需要生成或升级技能
-   * @param taskId 任务ID
-   */
-  async checkSkillGeneration(taskId: string): Promise<void> {
+  private async checkSkillGeneration(taskId: string): Promise<void> {
     try {
+      await logger.info('processor', `Checking skill generation for task: ${taskId}`);
+      
       // 获取事件链
       const eventChain = await storage.getEventChainByTaskId(taskId);
       if (!eventChain || eventChain.outcome !== 'success') {
+        await logger.debug('processor', 'Skipping skill generation (not a successful task)', { taskId, outcome: eventChain?.outcome });
         return; // 只处理成功的任务
       }
       
@@ -96,30 +125,45 @@ export const processor = {
       const similarChains = await storage.searchSimilarEventChains(eventChain.userIntent, 10);
       const successChains = similarChains.filter(chain => chain.outcome === 'success');
       
+      await logger.debug('processor', 'Found similar event chains', {
+        taskId,
+        userIntent: eventChain.userIntent,
+        similarChainCount: similarChains.length,
+        successChainCount: successChains.length
+      });
+      
       // 如果有足够多的成功案例，生成技能
       if (successChains.length >= 3) {
+        await logger.info('processor', 'Generating skill from successful event chains', {
+          taskId,
+          successChainCount: successChains.length
+        });
         await this.generateSkill(successChains);
+      } else {
+        await logger.debug('processor', 'Not enough successful chains to generate skill', {
+          taskId,
+          successChainCount: successChains.length
+        });
       }
-    } catch (error) {
-      console.error("Error checking skill generation:", error);
+    } catch (error: any) {
+      await logger.error('processor', 'Error checking skill generation', { taskId, error: error.message });
     }
-  },
+  }
 
-  /**
-   * 生成技能
-   * @param chains 事件链数组
-   */
-  async generateSkill(chains: EventChain[]): Promise<void> {
+  private async generateSkill(chains: EventChain[]): Promise<void> {
     try {
-      // 提取共同模式
+      await logger.info('processor', 'Generating skill from event chains', {
+        sourceChainCount: chains.length,
+        sampleIntent: chains[0]?.userIntent
+      });
+
       const pattern = this.extractCommonPattern(chains);
-      
-      // 生成技能
+
       const skill: Skill = {
-        id: `skill_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        id: `skill-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         name: this.generateSkillName(pattern.intent),
         description: pattern.description,
-        level: 'short', // 初始为Short Memory
+        level: 'short',
         template: {
           intent: pattern.intent,
           preconditions: pattern.preconditions,
@@ -131,26 +175,19 @@ export const processor = {
           successCount: 0,
           failureCount: 0,
           successRate: 0,
-          avgExecutionTime: 0,
           lastUsed: Date.now()
         },
         sourceChains: chains.map(chain => chain.id)
       };
-      
-      // 存储技能
-      await storage.storeSkill(skill);
-      console.log(`Skill generated: ${skill.name}`);
-    } catch (error) {
-      console.error("Error generating skill:", error);
-    }
-  },
 
-  /**
-   * 提取共同模式
-   * @param chains 事件链数组
-   * @returns 模式对象
-   */
-  extractCommonPattern(chains: EventChain[]): any {
+      await storage.storeSkill(skill);
+      await logger.logSkillGeneration(skill);
+    } catch (error: any) {
+      await logger.error('processor', 'Error generating skill', { error: error.message });
+    }
+  }
+
+  private extractCommonPattern(chains: EventChain[]): any {
     // 提取共同的用户意图
     const intents = chains.map(chain => chain.userIntent);
     const commonIntent = this.findMostCommon(intents);
@@ -170,24 +207,19 @@ export const processor = {
     const steps = commonTools.map(tool => ({
       action: tool,
       parameters: [], // 实际项目中应提取参数模板
-      errorHandling: "重试或使用备用方案"
+      errorHandling: '重试或使用备用方案'
     }));
     
     return {
       intent: commonIntent,
       description: `处理${commonIntent}的技能`,
-      preconditions: ["用户提供必要的输入参数"],
+      preconditions: ['用户提供必要的输入参数'],
       steps,
-      postconditions: ["任务成功完成"]
+      postconditions: ['任务成功完成']
     };
-  },
+  }
 
-  /**
-   * 找出最常见的元素
-   * @param items 元素数组
-   * @returns 最常见的元素
-   */
-  findMostCommon(items: string[]): string {
+  private findMostCommon(items: string[]): string {
     const counts = items.reduce((acc, item) => {
       acc[item] = (acc[item] || 0) + 1;
       return acc;
@@ -204,14 +236,9 @@ export const processor = {
     }
     
     return mostCommon;
-  },
+  }
 
-  /**
-   * 找出共同的工具序列
-   * @param sequences 工具序列数组
-   * @returns 共同的工具序列
-   */
-  findCommonToolSequence(sequences: string[][]): string[] {
+  private findCommonToolSequence(sequences: string[][]): string[] {
     if (sequences.length === 0) return [];
     
     // 找出最短的序列
@@ -226,87 +253,36 @@ export const processor = {
     }
     
     return commonTools;
-  },
+  }
 
-  /**
-   * 生成技能名称
-   * @param intent 用户意图
-   * @returns 技能名称
-   */
-  generateSkillName(intent: string): string {
+  private generateSkillName(intent: string): string {
     return `处理${intent.substring(0, 20)}${intent.length > 20 ? '...' : ''}`;
-  },
+  }
 
-  /**
-   * 检索相关技能
-   * @param query 查询字符串
-   * @param topK 返回数量
-   * @returns 技能数组
-   */
-  async retrieveSkills(query: string, topK: number = 5): Promise<Skill[]> {
+  async getRelevantSkills(userQuery: string, topK: number = 5): Promise<Skill[]> {
     try {
+      await logger.info('processor', 'Retrieving relevant skills', { query: userQuery, topK });
+      
       // 获取所有技能
       const allSkills = await storage.getAllSkills();
+      await logger.debug('processor', 'Retrieved all skills', { totalSkillCount: allSkills.length });
       
       // 计算相似度并排序
       const scoredSkills = allSkills.map(skill => ({
         skill,
-        score: storage.calculateSimilarity(query, skill.template.intent)
+        score: storage.calculateSimilarity(userQuery, skill.template.intent)
       }));
       
       scoredSkills.sort((a, b) => b.score - a.score);
-      return scoredSkills.slice(0, topK).map(item => item.skill);
-    } catch (error) {
-      console.error("Error retrieving skills:", error);
+      const relevantSkills = scoredSkills.slice(0, topK).map(item => item.skill);
+      
+      await logger.logSkillRetrieval(userQuery, relevantSkills, 'retrieval');
+      return relevantSkills;
+    } catch (error: any) {
+      await logger.error('processor', 'Error getting relevant skills', { query: userQuery, error: error.message });
       return [];
     }
-  },
-
-  /**
-   * 计算事件链相似度
-   * @param chain1 事件链1
-   * @param chain2 事件链2
-   * @returns 相似度分数
-   */
-  calculateChainSimilarity(chain1: EventChain, chain2: EventChain): number {
-    // 计算意图相似度
-    const intentSim = storage.calculateSimilarity(chain1.userIntent, chain2.userIntent);
-    
-    // 计算工具序列相似度
-    const tools1 = chain1.events
-      .filter(event => event.type === 'tool_call')
-      .map(event => event.metadata.toolName)
-      .filter(Boolean);
-    
-    const tools2 = chain2.events
-      .filter(event => event.type === 'tool_call')
-      .map(event => event.metadata.toolName)
-      .filter(Boolean);
-    
-    const toolSim = this.calculateToolSequenceSimilarity(tools1, tools2);
-    
-    // 加权计算总相似度
-    return 0.6 * intentSim + 0.4 * toolSim;
-  },
-
-  /**
-   * 计算工具序列相似度
-   * @param tools1 工具序列1
-   * @param tools2 工具序列2
-   * @returns 相似度分数
-   */
-  calculateToolSequenceSimilarity(tools1: string[], tools2: string[]): number {
-    if (tools1.length === 0 && tools2.length === 0) return 1.0;
-    if (tools1.length === 0 || tools2.length === 0) return 0.0;
-    
-    // 计算Jaccard相似度
-    const set1 = new Set(tools1);
-    const set2 = new Set(tools2);
-    const intersection = new Set([...set1].filter(tool => set2.has(tool)));
-    const union = new Set([...set1, ...set2]);
-    
-    return union.size > 0 ? intersection.size / union.size : 0;
-  },
+  }
 
   /**
    * 检查技能是否需要升级
@@ -327,8 +303,9 @@ export const processor = {
         console.log(`Skill ready for Fixed Memory: ${skill.name}`);
         // 实际项目中应添加人工审核流程
       }
-    } catch (error) {
-      console.error("Error checking skill upgrade:", error);
+    } catch (error: any) {
+      console.error('Error checking skill upgrade:', error);
     }
   }
-};
+}
+

@@ -203,15 +203,16 @@ export const storage = {
    */
   async updateSkill(skill: Skill): Promise<void> {
     try {
-      // 先删除旧的技能文件（如果存在）
-      const oldPath = path.join(SKILLS_DIR, skill.level, `${skill.id}.json`);
-      if (fs.existsSync(oldPath)) {
-        fs.unlinkSync(oldPath);
+      const levels = ['short', 'long', 'fixed'];
+      for (const lvl of levels) {
+        const oldPath = path.join(SKILLS_DIR, lvl, `${skill.id}.json`);
+        if (fs.existsSync(oldPath)) {
+          fs.unlinkSync(oldPath);
+        }
       }
-      
-      // 存储更新后的技能
+
       await this.storeSkill(skill);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error updating skill:", error);
       throw error;
     }

@@ -1,0 +1,7 @@
+pic/
+tem/
+.vscode/
+dist/
+*.md
+!README.md
+TODO

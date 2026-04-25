@@ -1,11 +1,48 @@
-# 飞书 OpenClaw Memory2Skills 插件 
-
-
+# 飞书 OpenClaw Memory2Skills 插件
 
 ![alt text](pic/image.png)
 
+## 快速安装
 
+```bash
+# 安装依赖
+npm install
+# 类型检查
+npx tsc --noEmit
+# 打包为 tgz
+npm pack
+# 列出已安装插件
+openclaw plugins list
+# 安装本地插件（目录或 tgz 均可）
+openclaw plugins install ./myorg-openclaw-mem2skill-1.0.0.tgz
+# 重启 Gateway 网关
+openclaw gateway restart
+```
 
+## 特性概览
+
+- **智能记忆提取**: 自动从对话中提取关键信息，构建结构化事件链
+- **技能自动生成**: 多次成功执行后，自动总结通用解决方案
+- **三级记忆体系**: Short Memory → Long Memory → Fixed Memory 逐级进化
+- **语义检索**: 基于向量数据库的混合检索，支持语义相似度匹配
+- **知识图谱**: 支持意图-动作-结果的关系查询和路径分析
+
+## 目录
+
+- [插件功能描述](#插件功能描述)
+- [核心功能](#核心功能)
+  - [记忆提取/建图](#1-记忆提取建图)
+  - [Query检索](#2-query检索)
+  - [相似事件链合并](#3-相似事件链合并)
+  - [技能生成/迭代](#4-技能生成迭代)
+- [Pro 功能](#pro-功能)
+- [评价指标](#评价指标)
+- [技术栈选型](#技术栈选型)
+- [实现路线图](#实现路线图)
+- [开发建议](#开发建议)
+- [参考资料](#参考资料)
+
+---
 
 ## 插件功能描述
 
@@ -27,17 +64,20 @@
 文件框架
 ```
 feishu-memory/
-├── package.yaml              # npm 元信息 + openclaw 配置
-├── openclaw.plugin.yaml      # 插件清单
-├── index.ts                  # 入口文件 (definePluginEntry)
-├── api.ts                    # 公共类型导出
-├── src/
-│   ├── storage.ts            # 存储层实现(向量数据库/JSON Lines)
-│   ├── processor.ts          # 记忆处理逻辑(提取、压缩、召回)
-│   ├── adapter.ts            # 飞书上下文适配器
-│   └── types.ts              # 类型定义
-└── skills/
-    └── memory-management.md  # 给 AI 看的技能说明
+|-- package.json              # npm 元信息 + openclaw 配置
+|-- openclaw.plugin.json      # 插件清单
+|-- index.ts                  # 入口文件 (definePluginEntry)
+|-- api.ts                    # 公共类型导出
+|-- src/
+|   |-- storage.ts            # 存储层实现(向量数据库/JSON Lines)
+|   |-- processor.ts          # 记忆处理逻辑(提取、压缩、召回)
+|   |-- adapter.ts            # 飞书上下文适配器
+|   |-- pro-features.ts       # Pro 功能实现
+|   `-- types.ts              # 类型定义
+|-- skills/
+|   `-- memory-management.md  # 给 AI 看的技能说明
+|-- pic/                      # 图片资源
+`-- arch.md                   # 架构文档
 ```
 
 
@@ -91,7 +131,60 @@ feishu-memory/
 
 ### Architecture
 
+## 快速开始
 
+### 环境要求
+
+- **Node.js**: >= 18.0.0
+- **OpenClaw**: >= v2026.4.11
+- **Plugin API**: >= 2026.3.24-beta.2
+
+### 安装步骤
+
+1. **克隆项目**
+   ```bash
+   git clone <repository-url>
+   cd openclaw-mem2skill
+   ```
+
+2. **安装依赖**
+   ```bash
+   npm install
+   ```
+
+3. **配置插件**
+   编辑 `openclaw.plugin.json`:
+   ```json
+   {
+     "id": "mem2skill",
+     "name": "Memory2Skills",
+     "description": "从对话记忆中自动生成技能",
+     "configSchema": {
+       "type": "object",
+       "properties": {
+         "successThreshold": {
+           "type": "number",
+           "default": 0.8
+         },
+         "shortMemoryThreshold": {
+           "type": "number",
+           "default": 3
+         }
+       }
+     }
+   }
+   ```
+
+4. **运行插件**
+   ```bash
+   npx openclaw dev
+   ```
+
+### 验证安装
+
+插件启动后，可通过以下方式验证：
+- 检查 OpenClaw 日志中是否有 "Memory2Skills plugin loaded" 信息
+- 在飞书对话中触发任务，观察控制台是否有记忆提取日志
 
 
 ## 核心功能
@@ -110,6 +203,7 @@ interface EventChain {
   timestamp: number;
   userIntent: string;           // 用户意图摘要
   events: Event[];              // 事件序列
+  toolSequence: string[];      // 工具调用序列 (仅问题+工具链调用+反馈结果)
   outcome: 'success' | 'failure' | 'partial';
   feedback?: UserFeedback;      // 用户反馈
   embedding: number[];          // 整体向量表示
@@ -925,10 +1019,10 @@ interface TransferabilityTest {
   - 识别高频技能和低频技能
 
 #### 存储效率
-- **目标**: 
-  - 每个事件链: ~5KB (压缩后)
+- **目标**:
+  - 每个事件链: ~10KB (压缩后，含 JSON 开销)
   - 每个技能: ~10KB
-  - 10000个事件链: < 100MB
+  - 10000个事件链: < 100MB (含向量数据)
   - 1000个技能: < 20MB
   - 向量索引: ~60MB (1536维)
   
@@ -972,6 +1066,15 @@ interface TransferabilityTest {
 
 ## 技术栈选型
 
+### 版本兼容性
+
+| 组件 | 要求版本 | 说明 |
+|------|----------|------|
+| Node.js | >= 18.0.0 | 推荐使用 LTS 版本 |
+| OpenClaw | >= v2026.4.11 | 当前测试版本 |
+| Plugin API | >= 2026.3.24-beta.2 | 插件接口版本 |
+| TypeScript | >= 5.0 | 编译支持 |
+
 ### 存储层
 
 #### 向量数据库
@@ -989,13 +1092,13 @@ interface TransferabilityTest {
 - **目录结构**:
 ```
 .openclaw/memory/
-├── skills/
-│   ├── short/          # Short Memory
-│   ├── long/           # Long Memory
-│   └── fixed/          # Fixed Memory
-├── chains/             # 事件链存储
-├── vectors/            # 向量索引
-└── index.db            # SQLite 索引
+|-- skills/
+|   |-- short/          # Short Memory
+|   |-- long/           # Long Memory
+|   `-- fixed/          # Fixed Memory
+|-- chains/             # 事件链存储
+|-- vectors/            # 向量索引
+`-- index.db            # SQLite 索引
 ```
 
 ### 向量化模型
@@ -1087,7 +1190,7 @@ interface TransferabilityTest {
 ## 开发建议
 
 ### 优先级排序
-1. **先做 MVP**: 快速验证核心价值 (2周内出原型)
+1. **先做 MVP**: 快速验证核心价值 (预计 2-4 周)
 2. **轻量优先**: 先用 JSON + SQLite，后期再考虑 Neo4j
 3. **渐进式**: 先实现 Short Memory，再扩展到 Long/Fixed
 4. **用户反馈**: 每个 Phase 后收集反馈，调整方向
@@ -1103,6 +1206,41 @@ interface TransferabilityTest {
 - **图数据库复杂度**: 可先用简化方案 (邻接表)，验证后再上 Neo4j
 - **LLM 调用延迟**: 异步处理，不阻塞主流程，添加超时机制
 - **存储增长**: 定期压缩和归档，设置存储上限告警
+
+---
+
+## 常见问题 (FAQ)
+
+### Q1: 插件启动失败怎么办？
+**A**: 检查以下配置：
+1. 确认 OpenClaw 版本 >= v2026.4.11
+2. 运行 `npx openclaw doctor` 检查环境
+3. 查看控制台错误日志定位问题
+
+### Q2: 如何查看记忆提取的日志？
+**A**: 启动插件时使用 debug 模式：
+```bash
+npx openclaw dev --debug
+```
+或设置环境变量 `LOG_LEVEL=debug`
+
+### Q3: 向量检索返回空结果是什么原因？
+**A**: 可能原因：
+1. 事件链数量不足（需要至少 10 条才有较好的召回效果）
+2. 向量化模型未正确配置
+3. 相似度阈值设置过高
+
+### Q4: 技能升级条件是什么？
+| 升级 | 条件 |
+|------|------|
+| Short → Long | 成功次数 >= 3 且成功率 > 80% |
+| Long → Fixed | 成功次数 >= 10 且成功率 > 90%，需人工确认 |
+
+### Q5: 如何导出/备份技能库？
+**A**: 技能库存储在 `.openclaw/memory/skills/` 目录，可直接打包备份：
+```bash
+tar -czf skills-backup.tar.gz .openclaw/memory/skills/
+```
 
 ---
 

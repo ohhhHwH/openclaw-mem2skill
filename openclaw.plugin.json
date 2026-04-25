@@ -1,9 +1,30 @@
 {
-  "id": "my-plugin",
-  "name": "My Plugin",
-  "description": "Adds a custom tool to OpenClaw",
+  "id": "memory2skill",
+  "name": "Memory to Skills",
+  "description": "Automatically extracts and generates skills from conversation memory",
   "configSchema": {
     "type": "object",
-    "additionalProperties": false
+    "properties": {
+      "successThreshold": {
+        "type": "number",
+        "default": 0.8,
+        "description": "技能升级阈值"
+      },
+      "shortMemoryThreshold": {
+        "type": "number",
+        "default": 3,
+        "description": "短期记忆阈值"
+      },
+      "longMemoryThreshold": {
+        "type": "number",
+        "default": 10,
+        "description": "长期记忆阈值"
+      },
+      "embeddingModel": {
+        "type": "string",
+        "default": "mock",
+        "description": "嵌入模型"
+      }
+    }
   }
 }
