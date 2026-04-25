@@ -27,7 +27,7 @@
       },
       "logDir": {
         "type": "string",
-        "description": "插件日志目录（可选，默认 .openclaw/memory/plugin-logs/）"
+        "description": "插件日志目录（可选，默认 ~/workspace/agent/logs）"
       }
     }
   }

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import {
   PluginLogEntry,
   PluginLogCategory,
@@ -9,7 +10,7 @@ import {
   ToolResultEvent,
 } from './types';
 
-const DEFAULT_LOG_DIR = path.join(process.cwd(), '.openclaw', 'memory', 'plugin-logs');
+const DEFAULT_LOG_DIR = path.join(os.homedir(), 'workspace', 'agent', 'logs');
 
 let logDir = DEFAULT_LOG_DIR;
 

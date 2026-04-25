@@ -1,9 +1,10 @@
 // logger.ts
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 
 // 日志目录
-const LOG_DIR = path.join(process.cwd(), '.openclaw', 'logs');
+const LOG_DIR = path.join(os.homedir(), 'workspace', 'agent', 'logs');
 
 // 确保日志目录存在
 function ensureLogDirectory() {

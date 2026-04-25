@@ -1,6 +1,4 @@
 #!/bin/bash
-
-cd ~/workspace/openclaw-mem2skill
 git pull
 npm pack
 mv ./myorg-openclaw-mem2skill-1.0.0.tgz ~/workspace/agent/mem2skill.tgz
