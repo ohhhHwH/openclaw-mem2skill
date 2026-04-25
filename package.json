@@ -1,5 +1,5 @@
 {
-  "name": "@myorg/openclaw-mem2skill",
+  "name": "memory2skill",
   "version": "1.0.0",
   "type": "module",
   "dependencies": {

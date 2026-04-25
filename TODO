@@ -5,5 +5,4 @@
 创建最小插件，使其能够 获取并修改 用户输入，目前默认输入为 "hello openclaw,"
 获取调用技能输入，Agent规划，工具调用等信息，
 并保存在日志当中 路径为 ~/workspace/agent/logs/myplugins.log
-
-#TODO: FIX BUG onTaskStart 09:04:39+00:00 [plugins] memory2skill failed during register from /home/gem/workspace/agent/extensions/memory2skill/index.ts: TypeError: api.onTaskStart is not a function
+#TODO:FIX 当前日志中只有 {"time":"2026-04-25T13:27:28.065Z","category":"plugin","message":"memory2skill registered"} 在用户输入问题后日志中并没有保存用户输入问题

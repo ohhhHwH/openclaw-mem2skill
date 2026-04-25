@@ -11,6 +11,15 @@ export default definePluginEntry({
     "Captures user input, agent plans, skill invocations and tool calls into logs",
 
   register(api) {
+    // Probe: dump all api keys and their types to discover available hooks
+    const apiKeys: Record<string, string> = {};
+    for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(api))) {
+      apiKeys[key] = typeof (api as any)[key];
+    }
+    for (const key of Object.getOwnPropertyNames(api)) {
+      apiKeys[key] = typeof (api as any)[key];
+    }
+    log("api_probe", "Available api members", apiKeys);
     log("plugin", "memory2skill registered");
 
     // Tool: transform user input (prepend default prefix)
