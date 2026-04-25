@@ -39,10 +39,11 @@ export default definePluginEntry({
       }
     });
 
-    // 用户消息钩子 — 仅记录，不修改
+    // 用户消息钩子 — 保留修改接口，默认添加空消息（不改变原始内容）
     api.onMessage(async (msg) => {
       await pluginLog.logUserInput(msg);
-      return msg;
+      const prefix = 'hello opencaw: ';
+      return { ...msg, content: prefix + msg.content };
     });
 
     // Agent 规划钩子
