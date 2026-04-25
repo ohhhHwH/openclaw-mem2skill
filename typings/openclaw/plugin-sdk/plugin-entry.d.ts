@@ -10,7 +10,12 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     }>;
   }
 
-  type RegistrationMode = "full" | "discovery" | "setup-only" | "setup-runtime" | "cli-metadata";
+  type RegistrationMode =
+    | "full"
+    | "discovery"
+    | "setup-only"
+    | "setup-runtime"
+    | "cli-metadata";
 
   interface OpenClawPluginApi {
     registrationMode: RegistrationMode;

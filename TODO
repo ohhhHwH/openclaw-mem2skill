@@ -1,5 +1,9 @@
-#TODO: 创建框架
-#TODO: 流程设计
-
+# 创建框架
+# 流程设计
+#TODO: 
+参考 @ref/插件清单.txt  @ref/构建最小插件.txt   @ref/入口点文档.txt  
+创建最小插件，使其能够 获取并修改 用户输入，目前默认输入为 "hello openclaw,"
+获取调用技能输入，Agent规划，工具调用等信息，
+并保存在日志当中 路径为 ~/workspace/agent/logs/myplugins.log
 
 #TODO: FIX BUG onTaskStart 09:04:39+00:00 [plugins] memory2skill failed during register from /home/gem/workspace/agent/extensions/memory2skill/index.ts: TypeError: api.onTaskStart is not a function

@@ -1,0 +1,119 @@
+openclaw.plugin.json 是 OpenClaw 在加载你的插件代码之前读取的元数据。下面的所有内容都必须足够轻量，能够在不启动插件运行时的情况下进行检查。
+用于：
+插件标识、配置验证和配置 UI 提示
+认证、新手引导和设置元数据（别名、自动启用、provider 环境变量、认证选项）
+控制平面界面的激活提示
+简写的模型系列归属
+静态能力归属快照（contracts）
+共享 openclaw qa 主机可检查的 QA 运行器元数据
+合并到目录和验证界面中的渠道专用配置元数据
+不要用于： 注册运行时行为、声明代码入口点或 npm 安装元数据。这些内容应放在你的插件代码和 package.json 中。
+
+最小示例
+```
+{
+  "id": "voice-call",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
+```
+
+完整示例
+```
+{
+  "id": "openrouter",
+  "name": "OpenRouter",
+  "description": "OpenRouter provider plugin",
+  "version": "1.0.0",
+  "providers": ["openrouter"],
+  "modelSupport": {
+    "modelPrefixes": ["router-"]
+  },
+  "providerEndpoints": [
+    {
+      "endpointClass": "xai-native",
+      "hosts": ["api.x.ai"]
+    }
+  ],
+  "cliBackends": ["openrouter-cli"],
+  "syntheticAuthRefs": ["openrouter-cli"],
+  "providerAuthEnvVars": {
+    "openrouter": ["OPENROUTER_API_KEY"]
+  },
+  "providerAuthAliases": {
+    "openrouter-coding": "openrouter"
+  },
+  "channelEnvVars": {
+    "openrouter-chatops": ["OPENROUTER_CHATOPS_TOKEN"]
+  },
+  "providerAuthChoices": [
+    {
+      "provider": "openrouter",
+      "method": "api-key",
+      "choiceId": "openrouter-api-key",
+      "choiceLabel": "OpenRouter API key",
+      "groupId": "openrouter",
+      "groupLabel": "OpenRouter",
+      "optionKey": "openrouterApiKey",
+      "cliFlag": "--openrouter-api-key",
+      "cliOption": "--openrouter-api-key <key>",
+      "cliDescription": "OpenRouter API key",
+      "onboardingScopes": ["text-inference"]
+    }
+  ],
+  "uiHints": {
+    "apiKey": {
+      "label": "API key",
+      "placeholder": "sk-or-v1-...",
+      "sensitive": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiKey": {
+        "type": "string"
+      }
+    }
+  }
+}
+```
+
+顶层字段
+
+字段	必填	类型	含义
+id	是	string	规范的插件 id。这是在 plugins.entries.<id> 中使用的 id。
+configSchema	是	object	此插件配置的内联 JSON Schema。
+enabledByDefault	否	true	将内置插件标记为默认启用。省略此字段，或将其设置为任何非 true 的值，则该插件默认保持禁用。
+legacyPluginIds	否	string[]	会规范化为此规范插件 id 的旧版 id。
+autoEnableWhenConfiguredProviders	否	string[]	当认证、配置或模型引用提到这些 provider id 时，应自动启用此插件。
+kind	否	"memory" | "context-engine"	声明一个供 plugins.slots.* 使用的排他性插件类型。
+channels	否	string[]	由此插件拥有的渠道 id。用于设备发现和配置验证。
+providers	否	string[]	由此插件拥有的 provider id。
+providerDiscoveryEntry	否	string	轻量级 provider 设备发现模块路径，相对于插件根目录，用于可在不激活完整插件运行时的情况下加载的、受清单作用域约束的 provider 目录元数据。
+modelSupport	否	object	由清单拥有的简写模型系列元数据，用于在运行时之前自动加载插件。
+modelCatalog	否	object	适用于由此插件拥有的 provider 的声明式模型目录元数据。这是未来只读列表、新手引导、模型选择器、别名和抑制功能的控制平面契约，无需加载插件运行时。
+providerEndpoints	否	object[]	由清单拥有的 endpoint host/baseUrl 元数据，适用于核心必须在 provider 运行时加载前分类的 provider 路由。
+cliBackends	否	string[]	由此插件拥有的 CLI 推理后端 id。用于根据显式配置引用在启动时自动激活。
+syntheticAuthRefs	否	string[]	provider 或 CLI 后端引用，其插件拥有的合成认证钩子应在运行时加载前的冷启动模型发现期间进行探测。
+nonSecretAuthMarkers	否	string[]	由内置插件拥有的占位 API key 值，表示非机密的本地、OAuth 或环境凭证状态。
+commandAliases	否	object[]	由此插件拥有的命令名称，应在运行时加载前生成具备插件感知能力的配置和 CLI 诊断信息。
+providerAuthEnvVars	否	Record<string, string[]>	用于 provider 认证/状态查找的已弃用兼容性环境变量元数据。对于新插件，优先使用 setup.providers[].envVars；在弃用窗口期内，OpenClaw 仍会读取此字段。
+providerAuthAliases	否	Record<string, string>	应复用另一个 provider id 进行认证查找的 provider id，例如共享基础 provider API key 和认证配置文件的编码 provider。
+channelEnvVars	否	Record<string, string[]>	OpenClaw 可在不加载插件代码的情况下检查的轻量级渠道环境变量元数据。将其用于通用启动/配置辅助工具需要识别的、由环境变量驱动的渠道设置或认证界面。
+providerAuthChoices	否	object[]	适用于新手引导选择器、首选 provider 解析和简单 CLI 标志接线的轻量级认证选项元数据。
+activation	否	object	适用于 provider、命令、渠道、路由和能力触发加载的轻量级激活规划元数据。仅为元数据；实际行为仍由插件运行时负责。
+setup	否	object	轻量级设置/新手引导描述符，供发现和设置界面在不加载插件运行时的情况下检查。
+qaRunners	否	object[]	共享 openclaw qa 主机在插件运行时加载前使用的轻量级 QA 运行器描述符。
+contracts	否	object	外部认证钩子、语音、实时转写、实时语音、媒体理解、图像生成、音乐生成、视频生成、网页抓取、Ollama Web 搜索 和工具归属的静态内置能力快照。
+mediaUnderstandingProviderMetadata	否	Record<string, object>	为 contracts.mediaUnderstandingProviders 中声明的 provider id 提供的轻量级媒体理解默认值。
+channelConfigs	否	Record<string, object>	在运行时加载前合并到设备发现和验证界面中的、由清单拥有的渠道配置元数据。
+skills	否	string[]	要加载的 Skills 目录，相对于插件根目录。
+name	否	string	人类可读的插件名称。
+description	否	string	显示在插件界面中的简短摘要。
+version	否	string	信息性插件版本。
+uiHints	否	Record<string, object>	配置字段的 UI 标签、占位符和敏感性提示。

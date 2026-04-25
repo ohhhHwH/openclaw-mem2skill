@@ -1,147 +1,117 @@
-// index.ts
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { Type } from "@sinclair/typebox";
-import { Processor } from "./src/processor";
-import { logger } from "./src/logger";
-import { pluginLog } from "./src/plugin-log";
+import { log } from "./src/logger";
 
-let processor: Processor | null = null;
+const DEFAULT_PREFIX = "hello openclaw,";
 
 export default definePluginEntry({
   id: "memory2skill",
-  name: "Memory to Skills",
-  description: "Automatically extracts and generates skills from conversation memory",
+  name: "Memory to Skill",
+  description:
+    "Captures user input, agent plans, skill invocations and tool calls into logs",
+
   register(api) {
-    processor = new Processor({
-      successThreshold: 0.8,
-      shortMemoryThreshold: 3,
-      longMemoryThreshold: 10,
-      embeddingModel: "mock"
-    });
+    log("plugin", "memory2skill registered");
 
+    // Tool: transform user input (prepend default prefix)
     api.registerTool({
-      name: "retrieve_skills",
-      description: "Retrieves relevant skills based on user query",
+      name: "mem2skill_transform_input",
+      description:
+        "Transforms user input by prepending a default greeting. Returns the modified text.",
       parameters: Type.Object({
-        query: Type.String(),
-        topK: Type.Optional(Type.Number({ default: 5 }))
+        input: Type.String({ description: "Original user input" }),
+        prefix: Type.Optional(
+          Type.String({
+            description: "Custom prefix (default: hello openclaw,)",
+          })
+        ),
       }),
       async execute(_id, params) {
-        try {
-          await logger.logUserQuery(params.query, _id);
-          if (processor) {
-            const skills = await processor.getRelevantSkills(params.query, params.topK || 5);
-            await logger.logSkillRetrieval(params.query, skills, _id);
-            return {
-              content: [{
-                type: "text",
-                text: `Found ${skills.length} relevant skills:\n${skills.map(s => `- ${s.name}: ${s.description}`).join('\n')}`
-              }]
-            };
-          }
-          return { content: [{ type: "text", text: "Processor not initialized" }] };
-        } catch (error: any) {
-          await logger.error('plugin', 'Error retrieving skills', { query: params.query, error: error.message });
-          return { content: [{ type: "text", text: "Failed to retrieve skills" }] };
-        }
+        const prefix = params.prefix ?? DEFAULT_PREFIX;
+        const transformed = `${prefix} ${params.input}`;
+        log("user_input", "Input transformed", {
+          original: params.input,
+          transformed,
+        });
+        return {
+          content: [{ type: "text", text: transformed }],
+        };
       },
     });
 
+    // Tool: log user input
     api.registerTool({
-      name: "process_task",
-      description: "Processes a completed task to extract event chains and generate skills",
+      name: "mem2skill_log_input",
+      description: "Logs a user input message",
       parameters: Type.Object({
-        taskId: Type.String(),
-        messages: Type.Array(Type.Object({
-          role: Type.Union([Type.Literal("user"), Type.Literal("assistant"), Type.Literal("system")]),
-          content: Type.String(),
-          timestamp: Type.Number()
-        })),
-        toolCalls: Type.Optional(Type.Array(Type.Object({
-          id: Type.String(),
-          name: Type.String(),
-          parameters: Type.Any(),
-          result: Type.Optional(Type.Any()),
-          timestamp: Type.Number()
-        }))),
-        userIntent: Type.Optional(Type.String())
+        content: Type.String(),
+        taskId: Type.Optional(Type.String()),
       }),
       async execute(_id, params) {
-        try {
-          if (!processor) {
-            return { content: [{ type: "text", text: "Processor not initialized" }] };
-          }
-          const task = {
-            id: params.taskId,
-            messages: params.messages,
-            toolCalls: params.toolCalls || [],
-            userIntent: params.userIntent || ""
-          };
-          await logger.info('plugin', `Processing task: ${task.id}`);
-          await processor.processTask(task);
-          return { content: [{ type: "text", text: `Task ${task.id} processed successfully` }] };
-        } catch (error: any) {
-          await logger.error('plugin', 'Error processing task', { taskId: params.taskId, error: error.message });
-          return { content: [{ type: "text", text: `Failed to process task: ${error.message}` }] };
-        }
+        log("user_input", params.content, { taskId: params.taskId });
+        return {
+          content: [{ type: "text", text: "logged" }],
+        };
       },
     });
 
+    // Tool: log agent plan
     api.registerTool({
-      name: "submit_feedback",
-      description: "Submits feedback for a completed task to improve skill quality",
+      name: "mem2skill_log_plan",
+      description: "Logs an agent planning event",
       parameters: Type.Object({
-        taskId: Type.String(),
-        score: Type.Number({ minimum: 0, maximum: 1 }),
-        comment: Type.Optional(Type.String())
+        planId: Type.String(),
+        steps: Type.Array(Type.String()),
+        reasoning: Type.Optional(Type.String()),
       }),
       async execute(_id, params) {
-        try {
-          if (!processor) {
-            return { content: [{ type: "text", text: "Processor not initialized" }] };
-          }
-          await logger.info('plugin', `Feedback received: ${params.taskId}, score: ${params.score}`);
-          await processor.processFeedback(params.taskId, { score: params.score, comment: params.comment });
-          return { content: [{ type: "text", text: `Feedback for task ${params.taskId} recorded` }] };
-        } catch (error: any) {
-          await logger.error('plugin', 'Error processing feedback', { taskId: params.taskId, error: error.message });
-          return { content: [{ type: "text", text: `Failed to record feedback: ${error.message}` }] };
-        }
+        log("agent_plan", `Plan ${params.planId}`, {
+          steps: params.steps,
+          reasoning: params.reasoning,
+        });
+        return {
+          content: [{ type: "text", text: "plan logged" }],
+        };
       },
     });
 
+    // Tool: log skill invocation
     api.registerTool({
-      name: "log_plugin_event",
-      description: "Logs a plugin event (user input, agent plan, tool call, or tool result)",
+      name: "mem2skill_log_skill",
+      description: "Logs a skill invocation event",
       parameters: Type.Object({
-        category: Type.Union([
-          Type.Literal("user_input"),
-          Type.Literal("agent_plan"),
-          Type.Literal("tool_call"),
-          Type.Literal("tool_result")
-        ]),
-        event: Type.Any()
+        skillName: Type.String(),
+        args: Type.Optional(Type.String()),
       }),
       async execute(_id, params) {
-        try {
-          switch (params.category) {
-            case 'user_input':
-              await pluginLog.logUserInput(params.event);
-              break;
-            case 'agent_plan':
-              await pluginLog.logAgentPlan(params.event);
-              break;
-            case 'tool_call':
-              await pluginLog.logToolCall(params.event);
-              break;
-            case 'tool_result':
-              await pluginLog.logToolResult(params.event);
-              break;
-          }
-          return { content: [{ type: "text", text: `Event logged: ${params.category}` }] };
-        } catch (error: any) {
-          return { content: [{ type: "text", text: `Failed to log event: ${error.message}` }] };
-        }
+        log("skill_invoke", `Skill: ${params.skillName}`, {
+          args: params.args,
+        });
+        return {
+          content: [{ type: "text", text: "skill logged" }],
+        };
+      },
+    });
+
+    // Tool: log tool call
+    api.registerTool({
+      name: "mem2skill_log_tool",
+      description: "Logs a tool call and its result",
+      parameters: Type.Object({
+        toolName: Type.String(),
+        parameters: Type.Optional(Type.String()),
+        result: Type.Optional(Type.String()),
+        success: Type.Optional(Type.Boolean()),
+      }),
+      async execute(_id, params) {
+        log("tool_call", `Tool: ${params.toolName}`, {
+          parameters: params.parameters,
+          result: params.result,
+          success: params.success,
+        });
+        return {
+          content: [{ type: "text", text: "tool call logged" }],
+        };
       },
     });
   },
