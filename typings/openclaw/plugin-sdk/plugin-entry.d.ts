@@ -10,55 +10,25 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     }>;
   }
 
-  interface MessageEvent {
-    taskId: string;
-    role: 'user' | 'assistant' | 'system';
-    content: string;
-    timestamp: number;
-  }
+  type RegistrationMode = "full" | "discovery" | "setup-only" | "setup-runtime" | "cli-metadata";
 
-  interface AgentPlanEvent {
-    taskId: string;
-    planId: string;
-    steps: { description: string; toolName?: string; parameters?: any }[];
-    reasoning?: string;
-    timestamp: number;
-  }
-
-  interface ToolCallEvent {
-    taskId: string;
-    callId: string;
-    toolName: string;
-    parameters: any;
-    timestamp: number;
-  }
-
-  interface ToolResultEvent {
-    taskId: string;
-    callId: string;
-    toolName: string;
-    result: any;
-    success: boolean;
-    duration: number;
-    timestamp: number;
-  }
-
-  interface PluginApi {
-    onTaskStart(handler: (task: any) => Promise<void>): void;
-    onTaskEnd(handler: (task: any) => Promise<void>): void;
-    onFeedback(handler: (feedback: { taskId: string; score: number; comment?: string }) => Promise<void>): void;
-    onMessage(handler: (message: MessageEvent) => Promise<MessageEvent>): void;
-    onAgentPlan(handler: (plan: AgentPlanEvent) => Promise<void>): void;
-    onToolCall(handler: (toolCall: ToolCallEvent) => Promise<void>): void;
-    onToolResult(handler: (toolResult: ToolResultEvent) => Promise<void>): void;
+  interface OpenClawPluginApi {
+    registrationMode: RegistrationMode;
     registerTool(tool: ToolDefinition): void;
+    registerProvider(provider: any): void;
+    registerChannel(channel: any): void;
+    registerCli(...args: any[]): void;
+    registerService(service: any): void;
+    registerGatewayMethod(method: any): void;
   }
 
   interface PluginEntry {
     id: string;
     name: string;
     description: string;
-    register(api: PluginApi): void;
+    kind?: string;
+    configSchema?: any;
+    register(api: OpenClawPluginApi): void;
   }
 
   export function definePluginEntry(entry: PluginEntry): PluginEntry;

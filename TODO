@@ -1,2 +1,5 @@
 #TODO: 创建框架
 #TODO: 流程设计
+
+
+#TODO: FIX BUG onTaskStart 09:04:39+00:00 [plugins] memory2skill failed during register from /home/gem/workspace/agent/extensions/memory2skill/index.ts: TypeError: api.onTaskStart is not a function
