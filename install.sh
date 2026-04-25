@@ -1,9 +1,6 @@
 #!/bin/bash
-git pull
+git pull --force
 npm pack
-mv ./myorg-openclaw-mem2skill-1.0.0.tgz ~/workspace/agent/mem2skill.tgz
-cd ~/workspace/agent
-openclaw plugins install ./mem2skill.tgz
-rm ./mem2skill.tgz
-openclaw gateway stop
-openclaw gateway start
+openclaw plugins install ./memory2skill-1.0.0.tgz
+rm ./memory2skill-1.0.0.tgz
+openclaw gateway restart
