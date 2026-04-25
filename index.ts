@@ -3,6 +3,7 @@ import { Type } from "@sinclair/typebox";
 import { log } from "./src/logger";
 
 const DEFAULT_PREFIX = "hello openclaw,";
+const PLUGIN_VERSION = "1.1";
 
 export default definePluginEntry({
   id: "memory2skill",
@@ -20,7 +21,7 @@ export default definePluginEntry({
       apiKeys[key] = typeof (api as any)[key];
     }
     log("api_probe", "Available api members", apiKeys);
-    log("plugin", "memory2skill registered");
+    log("plugin", `memory2skill registered v${PLUGIN_VERSION}`);
 
     // Tool: transform user input (prepend default prefix)
     api.registerTool({

@@ -1,6 +1,8 @@
 # openclaw 插件
 
 
+
+## 插件安装
 ```bash
 # 安装依赖
 npm install
@@ -23,3 +25,9 @@ openclaw plugins uninstall memory2skill
 用户输入-> 预处理层 -> 任务分发层 -> 插件执行层 -> 结果返回
 
 
+## 测试
+
+```bash
+# 插件本地测试
+npm test
+```

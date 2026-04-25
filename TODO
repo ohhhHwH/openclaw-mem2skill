@@ -6,3 +6,5 @@
 获取调用技能输入，Agent规划，工具调用等信息，
 并保存在日志当中 路径为 ~/workspace/agent/logs/myplugins.log
 #TODO:FIX 当前日志中只有 {"time":"2026-04-25T13:27:28.065Z","category":"plugin","message":"memory2skill registered"} 在用户输入问题后日志中并没有保存用户输入问题
+
+#测试脚本
