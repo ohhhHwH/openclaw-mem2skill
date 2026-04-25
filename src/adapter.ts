@@ -1,5 +1,5 @@
 // adapter.ts
-import { ConversationContext, Message, ToolCall } from "./types";
+import { ConversationContext, Message, ToolCall, MessageEvent, ToolCallEvent, AgentPlanEvent } from "./types";
 
 export const adapter = {
   /**
@@ -68,7 +68,7 @@ export const adapter = {
     if (task.toolCalls && Array.isArray(task.toolCalls)) {
       task.toolCalls.forEach((call: any) => {
         toolCalls.push({
-          id: call.id || `tool_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          id: call.id || `tool_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`,
           name: call.name || '',
           parameters: call.parameters || {},
           result: call.result,
@@ -107,5 +107,28 @@ export const adapter = {
    */
   extractToolSequence(toolCalls: ToolCall[]): string {
     return toolCalls.map(call => call.name).join(' -> ');
-  }
+  },
+
+  extractFromMessageEvent(event: MessageEvent): Message {
+    return {
+      role: event.role as 'user' | 'assistant' | 'system',
+      content: event.content,
+      timestamp: event.timestamp,
+    };
+  },
+
+  extractFromToolCallEvent(event: ToolCallEvent): ToolCall {
+    return {
+      id: event.callId,
+      name: event.toolName,
+      parameters: event.parameters,
+      timestamp: event.timestamp,
+    };
+  },
+
+  extractAgentPlanSteps(event: AgentPlanEvent): string[] {
+    return event.steps.map(step =>
+      step.toolName ? `${step.description} [${step.toolName}]` : step.description
+    );
+  },
 };

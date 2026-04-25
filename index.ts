@@ -3,6 +3,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { Type } from "@sinclair/typebox";
 import { Processor } from "./src/processor";
 import { logger } from "./src/logger";
+import { pluginLog } from "./src/plugin-log";
 
 let processor: Processor | null = null;
 
@@ -36,6 +37,27 @@ export default definePluginEntry({
       if (processor) {
         await processor.processFeedback(feedback.taskId, feedback);
       }
+    });
+
+    // 用户消息钩子 — 仅记录，不修改
+    api.onMessage(async (msg) => {
+      await pluginLog.logUserInput(msg);
+      return msg;
+    });
+
+    // Agent 规划钩子
+    api.onAgentPlan(async (plan) => {
+      await pluginLog.logAgentPlan(plan);
+    });
+
+    // 工具调用钩子
+    api.onToolCall(async (toolCall) => {
+      await pluginLog.logToolCall(toolCall);
+    });
+
+    // 工具结果钩子
+    api.onToolResult(async (toolResult) => {
+      await pluginLog.logToolResult(toolResult);
     });
 
     // 注册技能检索工具

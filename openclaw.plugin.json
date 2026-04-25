@@ -1,7 +1,7 @@
 {
   "id": "memory2skill",
   "name": "Memory to Skills",
-  "description": "Automatically extracts and generates skills from conversation memory",
+  "description": "Captures user input, agent plans, and tool calls into structured logs, then extracts and generates reusable skills from conversation memory",
   "configSchema": {
     "type": "object",
     "properties": {
@@ -24,6 +24,10 @@
         "type": "string",
         "default": "mock",
         "description": "嵌入模型"
+      },
+      "logDir": {
+        "type": "string",
+        "description": "插件日志目录（可选，默认 .openclaw/memory/plugin-logs/）"
       }
     }
   }

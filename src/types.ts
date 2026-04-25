@@ -94,4 +94,51 @@ export interface PluginConfig {
   shortMemoryThreshold: number;
   longMemoryThreshold: number;
   embeddingModel: string;
+  logDir?: string;
+}
+
+// --- 钩子事件类型 ---
+
+export interface MessageEvent {
+  taskId: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: number;
+}
+
+export interface AgentPlanEvent {
+  taskId: string;
+  planId: string;
+  steps: { description: string; toolName?: string; parameters?: any }[];
+  reasoning?: string;
+  timestamp: number;
+}
+
+export interface ToolCallEvent {
+  taskId: string;
+  callId: string;
+  toolName: string;
+  parameters: any;
+  timestamp: number;
+}
+
+export interface ToolResultEvent {
+  taskId: string;
+  callId: string;
+  toolName: string;
+  result: any;
+  success: boolean;
+  duration: number;
+  timestamp: number;
+}
+
+// --- 插件日志类型 ---
+
+export type PluginLogCategory = 'user_input' | 'agent_plan' | 'tool_call' | 'tool_result';
+
+export interface PluginLogEntry {
+  timestamp: number;
+  category: PluginLogCategory;
+  taskId: string;
+  payload: any;
 }
