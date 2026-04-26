@@ -3,4 +3,4 @@ git pull --force
 npm pack
 openclaw plugins install ./memory2skill-1.0.0.tgz
 rm ./memory2skill-1.0.0.tgz
-openclaw gateway restart
+bash /home/gem/workspace/agent/scripts/restart.sh
