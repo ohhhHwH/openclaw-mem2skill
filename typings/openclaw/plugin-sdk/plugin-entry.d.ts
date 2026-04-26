@@ -37,7 +37,7 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
     runtime: any;
     logger: any;
     registerTool(tool: ToolDefinition): void;
-    registerHook(hook: any): void;
+    registerHook(events: string | string[], handler: (...args: any[]) => any, opts?: any): void;
     registerHttpRoute(route: any): void;
     registerChannel(channel: any): void;
     registerGatewayMethod(method: any): void;
