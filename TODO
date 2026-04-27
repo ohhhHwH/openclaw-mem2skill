@@ -14,5 +14,6 @@
         参见平台文档说明：入口点文档.txt:48。
     #TODO : 最终回复没有被抓取到
         添加一个hook使智能体最终回复给用户的信息也被接收
-    #TODO 在获取到gateway的信息后才开始写日志
+    #TODO 在获取到gateway的信息后才开始写日志 - 相当于解决一下多次注册的问题-至少日志中信息少了
+        {"time":"2026-04-27T12:31:47.019Z","category":"lifecycle","message":"gateway_start","data":{"content":"{\"port\":18789}"}}
 #测试脚本
