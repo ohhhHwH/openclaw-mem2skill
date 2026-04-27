@@ -114,25 +114,44 @@ export default definePluginEntry({
       });
     });
 
-    // --- Capture final assistant reply to user ---
-    const replyEventCandidates = [
-      "after_reply",
-      "response_sent",
-      "assistant_response",
-      "message_sent",
-      "after_message_sending",
-      "completion",
-    ];
-    for (const evt of replyEventCandidates) {
-      api.on(evt, (event: any) => {
-        log("final_reply", `api.on('${evt}') fired`, {
-          content: safeStr(
-            event?.text ?? event?.content ?? event?.message ?? event
-          ),
-          taskId: event?.taskId,
-        });
+    // --- message_sent: final reply delivered to user ---
+    api.on("message_sent", (event: any) => {
+      log("final_reply", "message_sent", {
+        content: safeStr(
+          event?.text ?? event?.content ?? event?.message ?? event
+        ),
+        success: event?.success,
+        error: event?.error ? safeStr(event.error) : undefined,
+        taskId: event?.taskId,
+        threadId: event?.threadId,
+        messageId: event?.messageId,
       });
-    }
+    });
+
+    // --- llm_output: raw model response ---
+    api.on("llm_output", (event: any) => {
+      log("llm_output", "llm_output", {
+        content: safeStr(
+          event?.text ?? event?.content ?? event?.response ?? event
+        ),
+        model: event?.model,
+        provider: event?.provider,
+        taskId: event?.taskId,
+      });
+    });
+
+    // --- agent_end: final message + run status ---
+    api.on("agent_end", (event: any) => {
+      log("agent_end", "agent_end", {
+        finalMessage: safeStr(
+          event?.finalMessage ?? event?.message ?? event?.content
+        ),
+        success: event?.success,
+        duration: event?.duration,
+        runId: event?.runId,
+        taskId: event?.taskId,
+      });
+    });
 
     log("hook_reg", "All api.on hooks registered");
 
@@ -140,15 +159,12 @@ export default definePluginEntry({
     const hookEvents = [
       "message_received",
       "message_sending",
+      "message_sent",
       "before_tool_call",
       "after_tool_call",
       "reply_dispatch",
-      "after_reply",
-      "response_sent",
-      "assistant_response",
-      "message_sent",
-      "after_message_sending",
-      "completion",
+      "llm_output",
+      "agent_end",
     ];
     for (const evt of hookEvents) {
       try {
