@@ -5,6 +5,14 @@
 创建最小插件，使其能够 获取并修改 用户输入，目前默认输入为 "hello openclaw,"
 获取调用技能输入，Agent规划，工具调用等信息，
 并保存在日志当中 路径为 ~/workspace/agent/logs/myplugins.log
-#TODO:FIX 当前日志中只有 {"time":"2026-04-25T13:27:28.065Z","category":"plugin","message":"memory2skill registered"} 在用户输入问题后日志中并没有保存用户输入问题
+#FIX 当前日志中只有 {"time":"2026-04-25T13:27:28.065Z","category":"plugin","message":"memory2skill registered"} 在用户输入问题后日志中并没有保存用户输入问题
+    #TODO: agent 返回 hook tool call hook
+    #TODO: FIX BUG 插件多次被注册 definePluginEntry 有问题
+        简短结论：
+        插件被多次运行通常是因为 OpenClaw 在不同的注册模式
+        （如 discovery / cli-metadata / full）或多次评估入口时
+        会调用你的 register，而你的 register(api) 
+        在每次调用时不加判断地注册了大量监听器/钩子，导致重复注册与重复运行。
+        参见平台文档说明：入口点文档.txt:48。
 
 #测试脚本

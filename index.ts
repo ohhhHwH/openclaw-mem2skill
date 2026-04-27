@@ -2,7 +2,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { log } from "./src/logger";
 
 const DEFAULT_PREFIX = "hello openclaw,";
-const PLUGIN_VERSION = "1.4";
+const PLUGIN_VERSION = "1.5";
 
 function safeStr(val: any): string {
   if (val === undefined || val === null) return "";
@@ -25,6 +25,8 @@ export default definePluginEntry({
       mode: api.registrationMode,
     });
 
+    if (api.registrationMode !== "full") return;
+
     // --- Probe: api.runtime.events members ---
     try {
       const evKeys: Record<string, string> = {};
@@ -45,96 +47,76 @@ export default definePluginEntry({
       log("probe_events_obj_err", e.message);
     }
 
-    // --- Hook: message_received (user input) ---
-    try {
-      api.on("message_received", (event: any) => {
-        const content =
-          typeof event === "string"
-            ? event
-            : event?.text ?? event?.content ?? event?.message ?? safeStr(event);
-        const transformed = `${DEFAULT_PREFIX} ${content}`;
-        log("user_input", "message_received", {
-          original: content,
-          transformed,
-          taskId: event?.taskId,
-          threadId: event?.threadId,
-          role: event?.role,
-        });
-      });
-      log("hook_reg", "api.on('message_received') OK");
-    } catch (e: any) {
-      log("hook_reg_err", `message_received: ${e.message}`);
-    }
+    // --- api.on hooks ---
 
-    // --- Hook: message_sending (assistant output) ---
-    try {
-      api.on("message_sending", (event: any) => {
-        log("assistant_msg", "message_sending", {
-          content: safeStr(event?.text ?? event?.content ?? event?.message ?? event),
-          taskId: event?.taskId,
-          threadId: event?.threadId,
-        });
+    api.on("message_received", (event: any) => {
+      const content =
+        typeof event === "string"
+          ? event
+          : event?.text ?? event?.content ?? event?.message ?? safeStr(event);
+      const transformed = `${DEFAULT_PREFIX} ${content}`;
+      log("user_input", "message_received", {
+        original: content,
+        transformed,
+        taskId: event?.taskId,
+        threadId: event?.threadId,
+        role: event?.role,
       });
-      log("hook_reg", "api.on('message_sending') OK");
-    } catch (e: any) {
-      log("hook_reg_err", `message_sending: ${e.message}`);
-    }
+    });
 
-    // --- Hook: before_tool_call ---
-    try {
-      api.on("before_tool_call", (event: any) => {
-        log("tool_call", `before_tool_call: ${event?.name ?? event?.toolName ?? "?"}`, {
+    api.on("message_sending", (event: any) => {
+      log("assistant_msg", "message_sending", {
+        content: safeStr(
+          event?.text ?? event?.content ?? event?.message ?? event
+        ),
+        taskId: event?.taskId,
+        threadId: event?.threadId,
+      });
+    });
+
+    api.on("before_tool_call", (event: any) => {
+      log(
+        "tool_call",
+        `before_tool_call: ${event?.name ?? event?.toolName ?? "?"}`,
+        {
           toolName: event?.name ?? event?.toolName,
-          parameters: safeStr(event?.parameters ?? event?.params ?? event?.input),
+          parameters: safeStr(
+            event?.parameters ?? event?.params ?? event?.input
+          ),
           taskId: event?.taskId,
-        });
-      });
-      log("hook_reg", "api.on('before_tool_call') OK");
-    } catch (e: any) {
-      log("hook_reg_err", `before_tool_call: ${e.message}`);
-    }
+        }
+      );
+    });
 
-    // --- Hook: after_tool_call ---
-    try {
-      api.on("after_tool_call", (event: any) => {
-        log("tool_result", `after_tool_call: ${event?.name ?? event?.toolName ?? "?"}`, {
+    api.on("after_tool_call", (event: any) => {
+      log(
+        "tool_result",
+        `after_tool_call: ${event?.name ?? event?.toolName ?? "?"}`,
+        {
           toolName: event?.name ?? event?.toolName,
           result: safeStr(event?.result),
           success: event?.success,
           duration: event?.duration,
           taskId: event?.taskId,
-        });
-      });
-      log("hook_reg", "api.on('after_tool_call') OK");
-    } catch (e: any) {
-      log("hook_reg_err", `after_tool_call: ${e.message}`);
-    }
+        }
+      );
+    });
 
-    // --- Hook: reply_dispatch (agent plan / skill) ---
-    try {
-      api.on("reply_dispatch", (event: any) => {
-        log("agent_plan", "reply_dispatch", {
-          content: safeStr(event),
-        });
+    api.on("reply_dispatch", (event: any) => {
+      log("agent_plan", "reply_dispatch", {
+        content: safeStr(event),
       });
-      log("hook_reg", "api.on('reply_dispatch') OK");
-    } catch (e: any) {
-      log("hook_reg_err", `reply_dispatch: ${e.message}`);
-    }
+    });
 
-    // --- Hook: gateway_start ---
-    try {
-      api.on("gateway_start", (event: any) => {
-        log("lifecycle", "gateway_start", {
-          content: safeStr(event),
-        });
+    api.on("gateway_start", (event: any) => {
+      log("lifecycle", "gateway_start", {
+        content: safeStr(event),
       });
-      log("hook_reg", "api.on('gateway_start') OK");
-    } catch (e: any) {
-      log("hook_reg_err", `gateway_start: ${e.message}`);
-    }
+    });
 
-    // --- Also try registerHook with string event name ---
+    log("hook_reg", "All api.on hooks registered");
+
+    // --- registerHook with string event names ---
     const hookEvents = [
       "message_received",
       "message_sending",
@@ -152,19 +134,25 @@ export default definePluginEntry({
             ),
           });
         });
-        log("rh_reg", `registerHook('${evt}') OK`);
       } catch (e: any) {
         log("rh_reg_err", `registerHook('${evt}'): ${e.message}`);
       }
     }
+    log("hook_reg", "All registerHook hooks registered");
 
-    // --- Probe: try runtime.events.on / emit ---
+    // --- Probe: runtime.events ---
     try {
       const ev = (api.runtime as any).events;
       if (ev && typeof ev.on === "function") {
         const rtEvents = [
-          "message", "message_received", "tool_call", "tool_result",
-          "plan", "skill", "userMessage", "assistantMessage",
+          "message",
+          "message_received",
+          "tool_call",
+          "tool_result",
+          "plan",
+          "skill",
+          "userMessage",
+          "assistantMessage",
         ];
         for (const name of rtEvents) {
           ev.on(name, (...args: any[]) => {
