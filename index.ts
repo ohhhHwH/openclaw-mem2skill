@@ -115,23 +115,21 @@ export default definePluginEntry({
     });
 
     // --- Capture final assistant reply to user ---
-    const replyEvents = [
-      "model_response",
-      "assistant_reply",
-      "message_sent",
+    const replyEventCandidates = [
       "after_reply",
-      "response_complete",
+      "response_sent",
+      "assistant_response",
+      "message_sent",
+      "after_message_sending",
       "completion",
     ];
-    for (const evt of replyEvents) {
+    for (const evt of replyEventCandidates) {
       api.on(evt, (event: any) => {
-        log("final_reply", `${evt} fired`, {
+        log("final_reply", `api.on('${evt}') fired`, {
           content: safeStr(
-            event?.text ?? event?.content ?? event?.message ?? event?.response ?? event
+            event?.text ?? event?.content ?? event?.message ?? event
           ),
           taskId: event?.taskId,
-          threadId: event?.threadId,
-          model: event?.model,
         });
       });
     }
@@ -142,14 +140,15 @@ export default definePluginEntry({
     const hookEvents = [
       "message_received",
       "message_sending",
-      "message_sent",
       "before_tool_call",
       "after_tool_call",
       "reply_dispatch",
-      "model_response",
-      "assistant_reply",
       "after_reply",
-      "response_complete",
+      "response_sent",
+      "assistant_response",
+      "message_sent",
+      "after_message_sending",
+      "completion",
     ];
     for (const evt of hookEvents) {
       try {
@@ -174,12 +173,6 @@ export default definePluginEntry({
         const rtEvents = [
           "message",
           "message_received",
-          "message_sent",
-          "model_response",
-          "assistant_reply",
-          "after_reply",
-          "response_complete",
-          "completion",
           "tool_call",
           "tool_result",
           "plan",

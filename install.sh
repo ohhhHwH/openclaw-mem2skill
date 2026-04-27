@@ -1,5 +1,5 @@
 #!/bin/bash
-git pull --force
+git pull
 npm pack
 openclaw plugins uninstall memory2skill
 openclaw plugins install ./memory2skill-1.0.0.tgz
