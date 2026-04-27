@@ -2,7 +2,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { log } from "./src/logger";
 
 const DEFAULT_PREFIX = "hello openclaw,";
-const PLUGIN_VERSION = "1.5";
+const PLUGIN_VERSION = "1.6";
 
 function safeStr(val: any): string {
   if (val === undefined || val === null) return "";
@@ -114,15 +114,42 @@ export default definePluginEntry({
       });
     });
 
+    // --- Capture final assistant reply to user ---
+    const replyEvents = [
+      "model_response",
+      "assistant_reply",
+      "message_sent",
+      "after_reply",
+      "response_complete",
+      "completion",
+    ];
+    for (const evt of replyEvents) {
+      api.on(evt, (event: any) => {
+        log("final_reply", `${evt} fired`, {
+          content: safeStr(
+            event?.text ?? event?.content ?? event?.message ?? event?.response ?? event
+          ),
+          taskId: event?.taskId,
+          threadId: event?.threadId,
+          model: event?.model,
+        });
+      });
+    }
+
     log("hook_reg", "All api.on hooks registered");
 
     // --- registerHook with string event names ---
     const hookEvents = [
       "message_received",
       "message_sending",
+      "message_sent",
       "before_tool_call",
       "after_tool_call",
       "reply_dispatch",
+      "model_response",
+      "assistant_reply",
+      "after_reply",
+      "response_complete",
     ];
     for (const evt of hookEvents) {
       try {
@@ -147,6 +174,12 @@ export default definePluginEntry({
         const rtEvents = [
           "message",
           "message_received",
+          "message_sent",
+          "model_response",
+          "assistant_reply",
+          "after_reply",
+          "response_complete",
+          "completion",
           "tool_call",
           "tool_result",
           "plan",
