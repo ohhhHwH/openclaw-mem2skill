@@ -27,28 +27,7 @@ export default definePluginEntry({
 
     if (api.registrationMode !== "full") return;
 
-    // // --- Probe: api.runtime.events members ---
-    // try {
-    //   const evKeys: Record<string, string> = {};
-    //   const ev = (api.runtime as any).events;
-    //   if (ev) {
-    //     for (const k of Object.getOwnPropertyNames(ev)) {
-    //       evKeys[k] = typeof ev[k];
-    //     }
-    //     const proto = Object.getPrototypeOf(ev);
-    //     if (proto && proto !== Object.prototype) {
-    //       for (const k of Object.getOwnPropertyNames(proto)) {
-    //         evKeys[`proto.${k}`] = typeof proto[k];
-    //       }
-    //     }
-    //   }
-    //   log("probe_events_obj", "api.runtime.events members", evKeys);
-    // } catch (e: any) {
-    //   log("probe_events_obj_err", e.message);
-    // }
-
     // --- api.on hooks ---
-
     api.on("message_received", (event: any) => {
       const content =
         typeof event === "string"
@@ -63,16 +42,6 @@ export default definePluginEntry({
         role: event?.role,
       });
     });
-
-    // api.on("message_sending", (event: any) => {
-    //   log("assistant_msg", "message_sending", {
-    //     content: safeStr(
-    //       event?.text ?? event?.content ?? event?.message ?? event
-    //     ),
-    //     taskId: event?.taskId,
-    //     threadId: event?.threadId,
-    //   });
-    // });
 
     api.on("before_tool_call", (event: any) => {
       log(
@@ -114,20 +83,6 @@ export default definePluginEntry({
       });
     });
 
-    // // --- message_sent: final reply delivered to user ---
-    // api.on("message_sent", (event: any) => {
-    //   log("final_reply", "message_sent", {
-    //     content: safeStr(
-    //       event?.text ?? event?.content ?? event?.message ?? event
-    //     ),
-    //     success: event?.success,
-    //     error: event?.error ? safeStr(event.error) : undefined,
-    //     taskId: event?.taskId,
-    //     threadId: event?.threadId,
-    //     messageId: event?.messageId,
-    //   });
-    // });
-
     // --- llm_output: raw model response ---
     api.on("llm_output", (event: any) => {
       log("llm_output", "llm_output", {
@@ -152,68 +107,5 @@ export default definePluginEntry({
         taskId: event?.taskId,
       });
     });
-
-    // log("hook_reg", "All api.on hooks registered");
-
-    // // --- registerHook with string event names ---
-    // const hookEvents = [
-    //   "message_received",
-    //   "message_sending",
-    //   "message_sent",
-    //   "before_tool_call",
-    //   "after_tool_call",
-    //   "reply_dispatch",
-    //   "llm_output",
-    //   "agent_end",
-    // ];
-    // for (const evt of hookEvents) {
-    //   try {
-    //     api.registerHook(evt, (...args: any[]) => {
-    //       log(`rh_${evt}`, `registerHook '${evt}' fired`, {
-    //         argCount: args.length,
-    //         preview: args.map((a) =>
-    //           typeof a === "function" ? "[fn]" : safeStr(a)
-    //         ),
-    //       });
-    //     });
-    //   } catch (e: any) {
-    //     log("rh_reg_err", `registerHook('${evt}'): ${e.message}`);
-    //   }
-    // }
-    // log("hook_reg", "All registerHook hooks registered");
-
-    // // --- Probe: runtime.events ---
-    // try {
-    //   const ev = (api.runtime as any).events;
-    //   if (ev && typeof ev.on === "function") {
-    //     const rtEvents = [
-    //       "message",
-    //       "message_received",
-    //       "tool_call",
-    //       "tool_result",
-    //       "plan",
-    //       "skill",
-    //       "userMessage",
-    //       "assistantMessage",
-    //     ];
-    //     for (const name of rtEvents) {
-    //       ev.on(name, (...args: any[]) => {
-    //         log(`rt_event_${name}`, `runtime.events '${name}' fired`, {
-    //           argCount: args.length,
-    //           preview: args.map((a: any) =>
-    //             typeof a === "function" ? "[fn]" : safeStr(a)
-    //           ),
-    //         });
-    //       });
-    //     }
-    //     log("probe_rt_events", "Registered runtime.events listeners");
-    //   } else {
-    //     log("probe_rt_events", "runtime.events has no .on()", {
-    //       type: typeof ev?.on,
-    //     });
-    //   }
-    // } catch (e: any) {
-    //   log("probe_rt_events_err", e.message);
-    // }
   },
 });
