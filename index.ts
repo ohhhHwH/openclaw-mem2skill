@@ -2,7 +2,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { log } from "./src/logger";
 
 const DEFAULT_PREFIX = "hello openclaw,";
-const PLUGIN_VERSION = "1.7";
+const PLUGIN_VERSION = "1.9";
 
 function safeStr(val: any): string {
   if (val === undefined || val === null) return "";
