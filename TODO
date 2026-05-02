@@ -24,6 +24,7 @@
     # TODO 合并主干部分（query/tool call/ans保存，建图，图匹配，检索）
         # TODO 完成接口函数
     # TODO openclaw中指导Agent做出规划 - 暂定 prompt
+    # TODO 以本地日志形式保存图谱数据 (供后续批量导入)
     # TODO 用户评价/打分体系->准确性 速度 回答格式 - 暂定用户下一次的query中包含对上一次回答的评价/打分
     # TODO pro
         # TODO 判断工具调用间可以并行的调用

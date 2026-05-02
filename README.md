@@ -113,7 +113,7 @@ TODO : 日志中如何区分是哪个agent_plan的工具调用？如果有同步
 2. 生成整体向量 (userIntent + toolSequence + outcome) - ？必要性
 3. 保存*事件链摘要*到 LanceDB (向量检索)
 4. 构建知识图谱节点 (Intent → Action → Outcome) 和关系 (TRIGGERS, LEADS_TO, RESULTS_IN)
-5. 保存图谱到 Neo4j
+5. 保存图谱到 本地log知识图谱文件
 6. 进行图匹配操作，进行知识的融合提取
 7. 清理内存中的活跃事件链 - 或等下一次用户问题输入打分后
 
@@ -123,60 +123,145 @@ TODO : 日志中如何区分是哪个agent_plan的工具调用？如果有同步
 ### API(src/*.ts)
 
 #### src/types.ts — 核心类型定义
-| 类型 | 说明 |
-|------|------|
-| `MEvent` | 单个事件 (user_query / tool_call / ai_response / error) |
-| `EventChain` | 事件链: id, taskId, userIntent, events[], toolSequence[], outcome, embedding[] |
-| `GraphNode` | 图谱节点: id, type(Intent/Action/Context/Outcome), label, properties |
-| `GraphRelationship` | 图谱关系: from, to, type(TRIGGERS/REQUIRES/LEADS_TO/RESULTS_IN) |
-| `RetrievalResult` | 检索结果: chain + score |
-| `StorageConfig` | 存储配置: lanceDbPath, neo4jUri, neo4jUser, neo4jPassword |
 
-#### src/storage.ts — 存储层 (LanceDB + Neo4j)
+```typescript
+// 单个事件节点
+interface MEvent {
+  type: "user_query" | "tool_call" | "ai_response" | "error";
+  content: string;
+  metadata: {
+    toolName?: string;      // 工具名 (tool_call 类型)
+    parameters?: any;       // 工具入参
+    result?: any;           // 工具返回值 (after_tool_call 回填)
+    success?: boolean;      // 工具是否成功
+    duration?: number;      // 工具执行耗时 ms
+    timestamp: number;      // 事件时间戳
+  };
+}
+
+// 事件链 — 一次完整的 Query→Plan→ToolCalls→Response 过程
+interface EventChain {
+  id: string;               // UUID
+  taskId: string;           // 来自 event.taskId / threadId / runId
+  timestamp: number;        // 链创建时间
+  userIntent: string;       // 用户原始输入文本
+  events: MEvent[];         // 按时间顺序的事件列表
+  toolSequence: string[];   // 工具调用序列 (工具名数组)
+  outcome: "success" | "failure" | "partial";
+  embedding: number[];      // 向量 (用于 LanceDB ANN 检索)
+}
+
+// 知识图谱节点
+type GraphNodeType = "Intent" | "Action" | "Context" | "Outcome";
+interface GraphNode {
+  id: string;
+  type: GraphNodeType;
+  label: string;
+  properties: Record<string, any>;
+}
+
+// 知识图谱关系
+type GraphRelType = "TRIGGERS" | "REQUIRES" | "LEADS_TO" | "RESULTS_IN";
+interface GraphRelationship {
+  from: string;             // 起始节点 id
+  to: string;               // 目标节点 id
+  type: GraphRelType;
+  properties?: Record<string, any>;
+}
+
+// 向量检索结果
+interface RetrievalResult {
+  chain: EventChain;        // 匹配到的历史事件链
+  score: number;            // 相似度分数 (0~1, 越高越相似)
+}
+
+// 存储层配置
+interface StorageConfig {
+  lanceDbPath: string;      // LanceDB 数据目录
+  graphLogPath: string;     // 本地log知识图谱文件路径
+}
+```
+
+#### src/storage.ts — 存储层 (LanceDB + 本地log知识图谱文件)
+
+负责事件链的向量存储/检索 (LanceDB) 和知识图谱的持久化/查询 (本地log知识图谱文件)。
+
 ```typescript
 class Storage {
   constructor(config: StorageConfig)
-  init(): Promise<void>                    // 连接 LanceDB 和 Neo4j
-  close(): Promise<void>                   // 关闭连接
-  saveEventChain(chain: EventChain): Promise<void>           // 保存到 LanceDB
-  searchSimilar(embedding: number[], topK?: number): Promise<RetrievalResult[]>  // 向量检索
-  saveGraph(chainId: string, nodes: GraphNode[], rels: GraphRelationship[]): Promise<void>  // 保存到 Neo4j
-  queryByIntent(intentLabel: string): Promise<GraphNode[]>   // 按意图查询图谱
+
+  // 初始化: 连接 LanceDB - 向量检索, 加载 tem-mem long-mem 表数据到内存 以供检索
+  init(): Promise<void>
+
+  // 关闭所有连接
+  close(): Promise<void>
+
+  // 保存事件链到 LanceDB (表 "event_chains", 首次写入自动建表)
+  // 存储字段: id, taskId, userIntent, toolSequence(JSON), outcome, timestamp, chainJson(完整序列化), vector(Float32Array)
+  // 事件链 与 本地log知识图谱 数据 通过 taskId 进行关联
+  saveEventChain(chain: EventChain): Promise<void>
+
+  // 向量近似检索, 返回 top-k 相似事件链
+  // score = 1 / (1 + distance), 距离越小分数越高
+  searchSimilar(embedding: number[], topK?: number): Promise<RetrievalResult[]>
+
+  // 保存知识图谱到 本地log知识图谱 文件中
+  saveGraph(chainId: string, nodes: GraphNode[], rels: GraphRelationship[]): Promise<void>
+
+  // 按意图标签模糊查询 Intent 节点 (CONTAINS 匹配)
+  queryByIntent(intentLabel: string): Promise<GraphNode[]>
 }
 ```
-- Neo4j 不可用时自动降级为仅向量模式
-- LanceDB 表 "event_chains" 首次写入时自动创建
 
 #### src/processor.ts — 事件链构建 + Query检索
+
+核心处理器, 管理活跃事件链 (`activeChains: Map<taskId, EventChain>`), 对接 index.ts 中的事件处理器。
+
 ```typescript
 class Processor {
   constructor(config: StorageConfig)
-  init(): Promise<void>                                      // 初始化存储
-  close(): Promise<void>                                     // 关闭
-  onMessageReceived(event: any): Promise<RetrievalResult[]>  // 检索相似事件链
-  onReplyDispatch(event: any): void                          // 新建/更新事件链
-  onBeforeToolCall(event: any): void                         // 记录工具调用
-  onAfterToolCall(event: any): void                          // 回填工具结果
-  onAgentEnd(event: any): Promise<void>                      // 持久化 + 建图
+
+  // 初始化存储层
+  init(): Promise<void>
+
+  // 关闭存储层
+  close(): Promise<void>
+
+  // [Query检索] message_received 触发
+  // 1. 提取文本 → 生成 embedding → LanceDB ANN 检索 top-5
+  // 2. 同时创建当前 taskId 的 EventChain
+  // 输入: OpenClaw message_received 事件
+  // 返回: 相似事件链数组 (用于生成指导 Prompt)
+  onMessageReceived(event: any): Promise<RetrievalResult[]>
+
+  // [图谱建立] reply_dispatch 触发
+  // 获取或创建 EventChain, 追加 ai_response 事件
+  onReplyDispatch(event: any): void
+
+  // [图谱建立] before_tool_call 触发
+  // 追加 tool_call 事件, 更新 toolSequence
+  onBeforeToolCall(event: any): void
+
+  // [图谱建立] after_tool_call 触发
+  // 回填最近一次同名 tool_call 的 result/success/duration
+  onAfterToolCall(event: any): void
+
+  // [图谱建立] agent_end 触发
+  // 1. 设置 outcome → 生成 embedding → saveEventChain (LanceDB)
+  // 2. 构建图谱: Intent -TRIGGERS→ Action(s) -LEADS_TO→ ... -RESULTS_IN→ Outcome
+  // 3. saveGraph (本地log知识图谱文件) → 清理 activeChains
+  onAgentEnd(event: any): Promise<void>
 }
 ```
 
-#### src/logger.ts — 日志 (已有)
+#### src/logger.ts — JSON Lines 日志
+
 ```typescript
+// 追加一行 JSON 到 ~/workspace/agent/logs/myplugins.log
 function log(category: string, message: string, data?: any): void
 ```
 
 ### 配置
-
-环境变量:
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `NEO4J_URI` | `bolt://localhost:7687` | Neo4j 连接地址 |
-| `NEO4J_USER` | `neo4j` | Neo4j 用户名 |
-| `NEO4J_PASSWORD` | `password` | Neo4j 密码 |
-
-LanceDB 数据目录: `~/.openclaw/memory/vectors/`
-
 
 ## 测试
 
