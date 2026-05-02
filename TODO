@@ -31,7 +31,9 @@
     # TODO 语义标准化拆解 + 图对齐
         # TODO 图中因果关系并非线性的,成图状，to有多个,from有多个 -> 如问题to多个toolcall，最终问题的回答from多个tool call的结果
             # TODO 判断工具调用间的依赖关系 - 找到 Tool call 是由谁规划的
-                
+                # TODO agent_end message 中事件链记录数据过多，包括历史规划，减去晚于问题输入的message - 剩下的就是规划
+                # TODO 直接用 agent_end 清理过后的 message 建图
+                # TODO 找到一个 openclaw需要上一个tool call生成的结果才能进行下一个tool call的问题
         # TODO 语义标准化拆解 - 暂定 prompt
         # TODO 图对齐 - 暂定 prompt
         # TODO 图中 label( query ) -> "label":"今天leetcode每日一题是什么" -> 转成离散标准化的label

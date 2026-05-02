@@ -2,7 +2,9 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { log } from "./src/logger";
 
 const DEFAULT_PREFIX = "hello openclaw,";
-const PLUGIN_VERSION = "1.10";
+const PLUGIN_VERSION = "1.11";
+const questionTimestampByKey = new Map<string, number>();
+let latestQuestionTimestamp: number | null = null;
 
 function safeStr(val: any): string {
   if (val === undefined || val === null) return "";
@@ -12,6 +14,103 @@ function safeStr(val: any): string {
   } catch {
     return String(val).slice(0, 1000);
   }
+}
+
+function collectEventKeys(event: any): string[] {
+  const keys = [
+    event?.taskId,
+    event?.threadId,
+    event?.runId,
+    event?.sessionKey,
+    event?.messageId,
+    event?.metadata?.messageId,
+    event?.event?.messageId,
+    event?.event?.metadata?.messageId,
+    event?.ctx?.MessageSid,
+    event?.ctx?.SessionKey,
+  ];
+
+  return [...new Set(keys.filter((key): key is string => Boolean(key)))];
+}
+
+function rememberQuestionTimestamp(event: any, timestamp: number): void {
+  latestQuestionTimestamp = timestamp;
+  for (const key of collectEventKeys(event)) {
+    questionTimestampByKey.set(key, timestamp);
+  }
+}
+
+function rememberLatestQuestionForEvent(event: any): void {
+  if (latestQuestionTimestamp === null) return;
+  for (const key of collectEventKeys(event)) {
+    questionTimestampByKey.set(key, latestQuestionTimestamp);
+  }
+}
+
+function resolveQuestionTimestamp(event: any, messages: any[]): number | null {
+  for (const key of collectEventKeys(event)) {
+    const timestamp = questionTimestampByKey.get(key);
+    if (typeof timestamp === "number") return timestamp;
+  }
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role === "user" && typeof message?.timestamp === "number") {
+      return message.timestamp;
+    }
+  }
+
+  return latestQuestionTimestamp;
+}
+
+function cleanMessagesSinceQuestion(event: any): {
+  messages: any[] | undefined;
+  questionTimestamp: number | null;
+} {
+  const rawMessages = event?.messages ?? event?.event?.messages;
+  if (!Array.isArray(rawMessages)) {
+    return {
+      messages: rawMessages,
+      questionTimestamp: latestQuestionTimestamp,
+    };
+  }
+
+  const questionTimestamp = resolveQuestionTimestamp(event, rawMessages);
+  if (typeof questionTimestamp !== "number") {
+    return {
+      messages: rawMessages,
+      questionTimestamp: null,
+    };
+  }
+
+  let startIndex = -1;
+  for (let i = rawMessages.length - 1; i >= 0; i--) {
+    const message = rawMessages[i];
+    if (
+      message?.role === "user" &&
+      typeof message?.timestamp === "number" &&
+      message.timestamp >= questionTimestamp
+    ) {
+      startIndex = i;
+      break;
+    }
+  }
+
+  if (startIndex !== -1) {
+    return {
+      messages: rawMessages.slice(startIndex),
+      questionTimestamp,
+    };
+  }
+
+  return {
+    messages: rawMessages.filter(
+      (message: any) =>
+        typeof message?.timestamp !== "number" ||
+        message.timestamp >= questionTimestamp
+    ),
+    questionTimestamp,
+  };
 }
 
 export default definePluginEntry({
@@ -34,12 +133,16 @@ export default definePluginEntry({
           ? event
           : event?.text ?? event?.content ?? event?.message ?? safeStr(event);
       const transformed = `${DEFAULT_PREFIX} ${content}`;
+      const questionTimestamp = Date.now();
+      rememberQuestionTimestamp(event, questionTimestamp);
+
       log("user_input", "message_received", {
         original: content,
         transformed,
         taskId: event?.taskId,
         threadId: event?.threadId,
         role: event?.role,
+        questionTimestamp,
         event,
       });
     });
@@ -75,6 +178,7 @@ export default definePluginEntry({
     });
 
     api.on("reply_dispatch", (event: any) => {
+      rememberLatestQuestionForEvent(event);
       log("agent_plan", "reply_dispatch", {
         content: safeStr(event),
         event,
@@ -103,6 +207,11 @@ export default definePluginEntry({
 
     // --- agent_end: final message + run status ---
     api.on("agent_end", (event: any) => {
+      rememberLatestQuestionForEvent(event);
+      const rawMessages = event?.messages ?? event?.event?.messages;
+      const { messages: cleanedMessages, questionTimestamp } =
+        cleanMessagesSinceQuestion(event);
+
       log("agent_end", "agent_end", {
         finalMessage: safeStr(
           event?.finalMessage ?? event?.message ?? event?.content
@@ -111,7 +220,12 @@ export default definePluginEntry({
         duration: event?.duration,
         runId: event?.runId,
         taskId: event?.taskId,
-        event,
+        questionTimestamp,
+        messageCount: Array.isArray(rawMessages) ? rawMessages.length : undefined,
+        cleanedMessageCount: Array.isArray(cleanedMessages)
+          ? cleanedMessages.length
+          : undefined,
+        messages: cleanedMessages,
       });
     });
 
@@ -129,3 +243,4 @@ export default definePluginEntry({
     });
   },
 });
+
