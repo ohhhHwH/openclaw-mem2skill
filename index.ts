@@ -114,5 +114,12 @@ export default definePluginEntry({
         event,
       });
     });
+
+    // --- before agent: final message + run status ---
+    api.on("before_agent_reply", (event: any) => {
+      log("before_agent_reply", "before_agent_reply", {
+        event,
+      });
+    });
   },
 });
