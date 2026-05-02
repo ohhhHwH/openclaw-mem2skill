@@ -331,15 +331,15 @@ describe("simulate: replay v1.7.log via Processor", () => {
         expect(["TRIGGERS", "LEADS_TO", "RESULTS_IN"]).toContain(r.type);
       }
 
-      // Intent 是图的起点，与第一个 Action（或直接到 Outcome）通过 TRIGGERS 连接
+      // Intent 是图的起点，TRIGGERS 关系的 from 包含 Intent
       const intentId = intents[0].id;
-      const fromIntent = g.rels.filter((r) => r.from === intentId);
+      const fromIntent = g.rels.filter((r) => r.from.includes(intentId));
       expect(fromIntent.length).toBe(1);
       expect(fromIntent[0].type).toBe("TRIGGERS");
 
-      // Outcome 是图的终点，最后一条关系应该指向它且为 RESULTS_IN
+      // Outcome 是图的终点，RESULTS_IN 关系的 to 包含 Outcome
       const outcomeId = outcomes[0].id;
-      const toOutcome = g.rels.filter((r) => r.to === outcomeId);
+      const toOutcome = g.rels.filter((r) => r.to.includes(outcomeId));
       expect(toOutcome.length).toBe(1);
       expect(toOutcome[0].type).toBe("RESULTS_IN");
     }

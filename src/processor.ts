@@ -230,7 +230,7 @@ export class Processor {
     };
     nodes.push(intentNode);
 
-    let prevNodeId = intentNode.id;
+    const actionNodes: GraphNode[] = [];
     for (const toolName of chain.toolSequence) {
       const actionNode: GraphNode = {
         id: `action-${chain.id}-${toolName}-${nodes.length}`,
@@ -239,15 +239,25 @@ export class Processor {
         properties: {},
       };
       nodes.push(actionNode);
+      actionNodes.push(actionNode);
+    }
 
-      const relType =
-        prevNodeId === intentNode.id ? "TRIGGERS" : "LEADS_TO";
+    if (actionNodes.length > 0) {
+      // Intent -> all Actions (one-to-many TRIGGERS)
       rels.push({
-        from: prevNodeId,
-        to: actionNode.id,
-        type: relType,
+        from: [intentNode.id],
+        to: actionNodes.map((n) => n.id),
+        type: "TRIGGERS",
       });
-      prevNodeId = actionNode.id;
+
+      // Sequential LEADS_TO between adjacent actions
+      for (let i = 0; i < actionNodes.length - 1; i++) {
+        rels.push({
+          from: [actionNodes[i].id],
+          to: [actionNodes[i + 1].id],
+          type: "LEADS_TO",
+        });
+      }
     }
 
     const outcomeNode: GraphNode = {
@@ -257,9 +267,15 @@ export class Processor {
       properties: {},
     };
     nodes.push(outcomeNode);
+
+    // All Actions -> Outcome (many-to-one RESULTS_IN)
+    const resultFromIds =
+      actionNodes.length > 0
+        ? actionNodes.map((n) => n.id)
+        : [intentNode.id];
     rels.push({
-      from: prevNodeId,
-      to: outcomeNode.id,
+      from: resultFromIds,
+      to: [outcomeNode.id],
       type: "RESULTS_IN",
     });
 

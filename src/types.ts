@@ -34,8 +34,8 @@ export interface GraphNode {
 export type GraphRelType = "TRIGGERS" | "REQUIRES" | "LEADS_TO" | "RESULTS_IN";
 
 export interface GraphRelationship {
-  from: string;
-  to: string;
+  from: string[];
+  to: string[];
   type: GraphRelType;
   properties?: Record<string, any>;
 }
