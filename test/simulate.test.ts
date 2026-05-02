@@ -27,6 +27,14 @@ class Paths {
     Paths.OUTPUT_DIR,
     "event_chains.json"
   );
+  static readonly EVENT_CHAINS_RAW_PATH = path.join(
+    Paths.OUTPUT_DIR,
+    "event_chains_raw.json"
+  );
+  static readonly EVENT_CHAINS_VECTOR_PATH = path.join(
+    Paths.OUTPUT_DIR,
+    "event_chains_vector.json"
+  );
   static readonly GRAPH_DATA_PATH = path.join(
     Paths.OUTPUT_DIR,
     "graph_data.json"
@@ -156,10 +164,39 @@ describe("simulate: replay v1.7.log via Processor", () => {
     }
 
     // 4. 持久化结果，供后续分析与调试使用
-    //    4.1 事件链
+    //    4.1 事件链（完整结构，含 events / toolSequence / embedding）
     fs.writeFileSync(
       Paths.EVENT_CHAINS_PATH,
       JSON.stringify(collectedChains, null, 2),
+      "utf-8"
+    );
+    //    4.1.1 事件链原始文本视图：剥掉向量，只留人可读字段，方便人工审阅
+    const chainsRaw = collectedChains.map((c) => ({
+      id: c.id,
+      taskId: c.taskId,
+      timestamp: c.timestamp,
+      userIntent: c.userIntent,
+      toolSequence: c.toolSequence,
+      outcome: c.outcome,
+      events: c.events,
+    }));
+    //    4.1.2 事件链向量视图：只留检索所需的键字段 + embedding，对齐 graph_data_vector
+    const chainsVector = collectedChains.map((c) => ({
+      id: c.id,
+      taskId: c.taskId,
+      userIntent: c.userIntent,
+      toolSequence: c.toolSequence,
+      outcome: c.outcome,
+      embedding: c.embedding,
+    }));
+    fs.writeFileSync(
+      Paths.EVENT_CHAINS_RAW_PATH,
+      JSON.stringify(chainsRaw, null, 2),
+      "utf-8"
+    );
+    fs.writeFileSync(
+      Paths.EVENT_CHAINS_VECTOR_PATH,
+      JSON.stringify(chainsVector, null, 2),
       "utf-8"
     );
     //    4.2 图谱数据（原始结构，含节点与关系）
@@ -309,9 +346,11 @@ describe("simulate: replay v1.7.log via Processor", () => {
   });
 
   // ===== 断言：产物落盘 =====
-  it("应落盘四份产物：event_chains / graph_data / graph_data_raw / graph_data_vector", () => {
+  it("应落盘六份产物：event_chains(+raw/vector) / graph_data(+raw/vector)", () => {
     for (const p of [
       Paths.EVENT_CHAINS_PATH,
+      Paths.EVENT_CHAINS_RAW_PATH,
+      Paths.EVENT_CHAINS_VECTOR_PATH,
       Paths.GRAPH_DATA_PATH,
       Paths.GRAPH_DATA_RAW_PATH,
       Paths.GRAPH_DATA_VECTOR_PATH,
@@ -331,6 +370,32 @@ describe("simulate: replay v1.7.log via Processor", () => {
       expect(Array.isArray(c.events)).toBe(true);
       expect(Array.isArray(c.toolSequence)).toBe(true);
       expect(Array.isArray(c.embedding)).toBe(true);
+    }
+
+    // event_chains_raw.json：人工审阅用，必须保留 userIntent 文本，且不含 embedding
+    const rawChains = JSON.parse(
+      fs.readFileSync(Paths.EVENT_CHAINS_RAW_PATH, "utf-8")
+    );
+    expect(rawChains.length).toBe(collectedChains.length);
+    for (const c of rawChains) {
+      expect(typeof c.userIntent).toBe("string");
+      expect(c.embedding).toBeUndefined();
+    }
+
+    // event_chains_vector.json：每条链都必须挂着等长 embedding
+    const vecChains = JSON.parse(
+      fs.readFileSync(Paths.EVENT_CHAINS_VECTOR_PATH, "utf-8")
+    );
+    expect(vecChains.length).toBe(collectedChains.length);
+    for (const c of vecChains) {
+      expect(Array.isArray(c.embedding)).toBe(true);
+      expect(c.embedding.length).toBe(Paths.EMBEDDING_DIM);
+    }
+
+    // 原始与向量两份事件链应在 id 顺序与 toolSequence 上保持一致，便于后续对齐
+    for (let i = 0; i < rawChains.length; i++) {
+      expect(vecChains[i].id).toBe(rawChains[i].id);
+      expect(vecChains[i].toolSequence).toEqual(rawChains[i].toolSequence);
     }
 
     // graph_data_raw.json：节点必须保留可读 label
@@ -362,5 +427,63 @@ describe("simulate: replay v1.7.log via Processor", () => {
       expect(vecGraphs[i].nodes.length).toBe(rawGraphs[i].nodes.length);
       expect(vecGraphs[i].rels.length).toBe(rawGraphs[i].rels.length);
     }
+  });
+
+  // ===== 断言：历史事件链检索 =====
+  it("基于向量的历史事件链检索应能按语义命中对应会话", async () => {
+    // 直接用 Storage.searchSimilar，避免 onMessageReceived 的副作用污染 activeChains
+    const storage: any = (processor as any).storage;
+
+    // 构造与历史链同源的查询向量：用 userIntent + toolSequence，与 onAgentEnd 中保持一致
+    const stockChain = collectedChains.find(
+      (c) => c.taskId === "76fb1627-5283-4dcc-8433-33181ba33a25"
+    )!;
+    const leetcodeChain = collectedChains.find(
+      (c) => c.taskId === "481aa500-3213-49ed-841e-f42d64af6f7b"
+    )!;
+
+    // 1. 用美股相关查询应优先命中美股链
+    //    simpleEmbedding 是字符频率哈希，查询文本需与目标 userIntent 字符分布接近
+    const stockQueryVec = simpleEmbedding(
+      "今天美股涨的最多的股票是哪只 exec web_crawl"
+    );
+    const stockHits = await storage.searchSimilar(stockQueryVec, 5);
+    expect(stockHits.length).toBeGreaterThan(0);
+    expect(stockHits[0].chain.id).toBe(stockChain.id);
+    // 相似度应为合法分数
+    for (const h of stockHits) {
+      expect(typeof h.score).toBe("number");
+      expect(h.score).toBeGreaterThanOrEqual(-1);
+      expect(h.score).toBeLessThanOrEqual(1);
+    }
+
+    // 2. 用 LeetCode 相关查询应优先命中 LeetCode 链
+    const leetcodeQueryVec = simpleEmbedding(
+      "今天leetcode每日一题的题目 exec web_crawl"
+    );
+    const leetcodeHits = await storage.searchSimilar(leetcodeQueryVec, 5);
+    expect(leetcodeHits.length).toBeGreaterThan(0);
+    expect(leetcodeHits[0].chain.id).toBe(leetcodeChain.id);
+
+    // 3. topK 截断生效
+    const topOne = await storage.searchSimilar(stockQueryVec, 1);
+    expect(topOne.length).toBe(1);
+
+    // 4. 走 Processor.onMessageReceived 也应能在保存的历史里检索到自身或同类
+    //    新建链会污染 activeChains，测试结束后清理
+    const retrieval = await processor.onMessageReceived({
+      time: Date.now(),
+      data: { original: "今天美股表现最好的股票", taskId: "probe-stock" },
+    });
+    expect(Array.isArray(retrieval)).toBe(true);
+    expect(retrieval.length).toBeGreaterThan(0);
+    // 排在最前的应该是历史里两条链之一（最相似的命中是 stockChain 但不强约束顺序）
+    const top = retrieval[0];
+    const histIds = collectedChains.map((c) => c.id);
+    expect(histIds).toContain(top.chain.id);
+
+    // 清理 probe，避免影响后续 afterAll
+    (processor as any).activeChains.delete("probe-stock");
+    (processor as any).pendingTaskId = null;
   });
 });
