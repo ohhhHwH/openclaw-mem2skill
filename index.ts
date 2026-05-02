@@ -127,11 +127,5 @@ export default definePluginEntry({
         event,
       });
     });
-
-    api.on("llm_output", (event: any) => {
-      log("llm_output", "llm_output", {
-        event,
-      });
-    });
   },
 });
