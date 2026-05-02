@@ -25,6 +25,16 @@
         # TODO 完成接口函数
     # TODO openclaw中指导Agent做出规划 - 暂定 prompt
     # TODO 以本地日志形式保存图谱数据 (供后续批量导入)
+        # TODO storage.ts PATH 路径指定
+    # TODO 创建CONFIG文件，包含日志路径，图谱数据路径等
+
+    # TODO 语义标准化拆解 + 图对齐
+        # TODO 图中因果关系并非线性的，是图的，to有多个,from有多个 -> 如问题to多个toolcall，最终问题的回答from多个tool call的结果
+            # TODO 判断工具调用间的依赖关系
+        # TODO 语义标准化拆解 - 暂定 prompt
+        # TODO 图对齐 - 暂定 prompt
+        # TODO 图中 label( query ) -> "label":"今天leetcode每日一题是什么" -> 转成离散标准化的label
+
     # TODO 用户评价/打分体系->准确性 速度 回答格式 - 暂定用户下一次的query中包含对上一次回答的评价/打分
     # TODO pro
         # TODO 判断工具调用间可以并行的调用
@@ -33,5 +43,9 @@
         # TODO Query 相似度
         # TODO 多用户同时输入，事件链如何建立
             TODO : 日志中如何区分是哪个agent_plan的工具调用？如果有同步的tool call如何区分
+    # TODO test
+        # test中 保存事件链为相同问题
+        # TODO test没有进行 历史事件链检索 的测试，以及历史事件链的向量表和对应原始文本
+
 
 #TODO 查看赛题说明 https://bytedance.larkoffice.com/wiki/TYewweOPuiHMtBkA1aXcldJonic
