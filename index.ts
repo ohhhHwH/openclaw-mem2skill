@@ -2,7 +2,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { log } from "./src/logger";
 
 const DEFAULT_PREFIX = "hello openclaw,";
-const PLUGIN_VERSION = "1.9";
+const PLUGIN_VERSION = "1.10";
 
 function safeStr(val: any): string {
   if (val === undefined || val === null) return "";
@@ -118,6 +118,18 @@ export default definePluginEntry({
     // --- before agent: final message + run status ---
     api.on("before_agent_reply", (event: any) => {
       log("before_agent_reply", "before_agent_reply", {
+        event,
+      });
+    });
+
+    api.on("llm_input", (event: any) => {
+      log("llm_input", "llm_input", {
+        event,
+      });
+    });
+
+    api.on("llm_output", (event: any) => {
+      log("llm_output", "llm_output", {
         event,
       });
     });
