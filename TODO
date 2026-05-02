@@ -29,8 +29,9 @@
     # TODO 创建CONFIG文件，包含日志路径，图谱数据路径等
 
     # TODO 语义标准化拆解 + 图对齐
-        # TODO 图中因果关系并非线性的，是图的，to有多个,from有多个 -> 如问题to多个toolcall，最终问题的回答from多个tool call的结果
-            # TODO 判断工具调用间的依赖关系
+        # TODO 图中因果关系并非线性的,成图状，to有多个,from有多个 -> 如问题to多个toolcall，最终问题的回答from多个tool call的结果
+            # TODO 判断工具调用间的依赖关系 - 找到 Tool call 是由谁规划的
+                
         # TODO 语义标准化拆解 - 暂定 prompt
         # TODO 图对齐 - 暂定 prompt
         # TODO 图中 label( query ) -> "label":"今天leetcode每日一题是什么" -> 转成离散标准化的label

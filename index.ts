@@ -40,6 +40,7 @@ export default definePluginEntry({
         taskId: event?.taskId,
         threadId: event?.threadId,
         role: event?.role,
+        event,
       });
     });
 
@@ -53,6 +54,7 @@ export default definePluginEntry({
             event?.parameters ?? event?.params ?? event?.input
           ),
           taskId: event?.taskId,
+          event,
         }
       );
     });
@@ -67,6 +69,7 @@ export default definePluginEntry({
           success: event?.success,
           duration: event?.duration,
           taskId: event?.taskId,
+          event,
         }
       );
     });
@@ -74,12 +77,14 @@ export default definePluginEntry({
     api.on("reply_dispatch", (event: any) => {
       log("agent_plan", "reply_dispatch", {
         content: safeStr(event),
+        event,
       });
     });
 
     api.on("gateway_start", (event: any) => {
       log("lifecycle", "gateway_start", {
         content: safeStr(event),
+        event,
       });
     });
 
@@ -92,6 +97,7 @@ export default definePluginEntry({
         model: event?.model,
         provider: event?.provider,
         taskId: event?.taskId,
+        event,
       });
     });
 
@@ -105,6 +111,7 @@ export default definePluginEntry({
         duration: event?.duration,
         runId: event?.runId,
         taskId: event?.taskId,
+        event,
       });
     });
   },
