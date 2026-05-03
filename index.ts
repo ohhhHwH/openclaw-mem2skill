@@ -12,13 +12,14 @@ import type {
   RetrievalResult,
 } from "./src/types";
 
-const PLUGIN_VERSION = "1.13";
+const PLUGIN_VERSION = "1.14";
 const DEFAULT_PREFIX = "hello openclaw,";
 const questionTimestampByKey = new Map<string, number>();
 let latestQuestionTimestamp: number | null = null;
 
 let processor: Processor | null = null;
 let pluginConfig: PluginConfig | null = null;
+let lastRunId: string | null = null;
 
 function safeStr(val: any): string {
   if (val === undefined || val === null) return "";
@@ -339,14 +340,16 @@ export default definePluginEntry({
     const userConfig = (api as any).config ?? {};
     pluginConfig = resolveConfig(userConfig);
 
-    processor = new Processor({
-      lanceDbPath: pluginConfig.lanceDbPath,
-      graphLogPath: pluginConfig.graphLogPath,
-    });
+    if (!processor) {
+      processor = new Processor({
+        lanceDbPath: pluginConfig.lanceDbPath,
+        graphLogPath: pluginConfig.graphLogPath,
+      });
 
-    processor.init().catch((err: any) => {
-      log("error", "processor init failed", { error: String(err) });
-    });
+      processor.init().catch((err: any) => {
+        log("error", "processor init failed", { error: String(err) });
+      });
+    }
 
     // ---- message_received: 检索历史事件链，构建 prompt 注入 ----
     api.on("message_received", async (event: any) => {
@@ -428,6 +431,16 @@ export default definePluginEntry({
     // ---- reply_dispatch ----
     api.on("reply_dispatch", (event: any) => {
       rememberLatestQuestionForEvent(event);
+
+      let runId: string | undefined;
+      try {
+        const parsed = JSON.parse(
+          typeof event === "string" ? event : event?.content ?? "{}"
+        );
+        runId = parsed.runId ?? parsed.ctx?.MessageSid;
+      } catch {}
+      if (runId) lastRunId = runId;
+
       log("agent_plan", "reply_dispatch", {
         content: safeStr(event),
         event,
@@ -484,11 +497,13 @@ export default definePluginEntry({
       if (!processor || !pluginConfig) return;
 
       try {
+        const resolvedRunId = event?.runId ?? event?.taskId ?? lastRunId;
+
         const agentEndEvent = {
           time: Date.now(),
           data: {
-            runId: event?.runId,
-            taskId: event?.taskId,
+            runId: resolvedRunId,
+            taskId: resolvedRunId,
             success: event?.success,
             messages: cleanedMessages,
           },
@@ -503,10 +518,11 @@ export default definePluginEntry({
         }
 
         log("graph_build", "agent_end graph built and exported", {
-          taskId: event?.taskId,
-          runId: event?.runId,
+          taskId: resolvedRunId,
           chainId: saved?.chainId,
         });
+
+        lastRunId = null;
       } catch (err: any) {
         log("error", "agent_end graph build failed", { error: String(err) });
       }
