@@ -43,6 +43,7 @@
     # TODO 最终回答 + query -> LLM 给出一个分数
         # TODO 事件链检索 - 结果反馈 - 用LLM
     # TODO message_received 将原始信息 + retrival
+        # TODO "category":"agent_plan","message":"reply_dispatch" 时，并没有接受到 retrival 中添加的事件链等信息
     # log 中 保留事件触发 message_received agent_end；日志保留  reply_dispatch llm_input；其他 删去(暂定-成功规划中用不到)
     # test
         # TEST 中有bug 

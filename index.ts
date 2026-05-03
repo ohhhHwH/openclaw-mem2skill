@@ -20,6 +20,7 @@ let latestQuestionTimestamp: number | null = null;
 let processor: Processor | null = null;
 let pluginConfig: PluginConfig | null = null;
 let lastRunId: string | null = null;
+let pendingRetrievalPrompt: string | null = null;
 
 function safeStr(val: any): string {
   if (val === undefined || val === null) return "";
@@ -420,12 +421,25 @@ export default definePluginEntry({
           prompt,
         });
 
-        if (prompt && typeof (api as any).prependSystemMessage === "function") {
-          (api as any).prependSystemMessage(prompt);
+        if (prompt) {
+          pendingRetrievalPrompt = prompt;
         }
       } catch (err: any) {
         log("error", "retrieval failed", { error: String(err) });
       }
+    });
+
+    // ---- before_prompt_build: 将检索到的事件链注入 agent 上下文 ----
+    api.on("before_prompt_build", (_event: any) => {
+      if (pendingRetrievalPrompt) {
+        const prompt = pendingRetrievalPrompt;
+        pendingRetrievalPrompt = null;
+        log("retrieval", "injecting prompt via before_prompt_build", {
+          length: prompt.length,
+        });
+        return { prependContext: prompt };
+      }
+      return undefined;
     });
 
     // ---- reply_dispatch ----
