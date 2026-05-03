@@ -31,11 +31,9 @@ function parseDataContent(event: any): any {
 export class Processor {
   private storage: Storage;
   private activeChains: Map<string, EventChain> = new Map();
-  // 保存最近一次 onMessageReceived 创建的、尚未绑定到 runId 的事件链 taskId
   private pendingTaskId: string | null = null;
-  // 当前活跃会话的 runId，工具事件与 agent_end 在缺少 runId 时按它定位
   private currentRunId: string | null = null;
-  // onAgentEnd 构建的待定图谱数据，等 onLlmOutput 补充 Outcome 后落盘
+  // 兼容旧流程：onAgentEnd 构建的待定图谱数据，等 onLlmOutput 补充 Outcome 后落盘
   private pendingGraphData: Map<
     string,
     {
@@ -47,6 +45,12 @@ export class Processor {
       intentNode: GraphNode;
     }
   > = new Map();
+  private lastSavedGraph: {
+    chainId: string;
+    chain: EventChain;
+    nodes: GraphNode[];
+    rels: GraphRelationship[];
+  } | null = null;
 
   constructor(config: StorageConfig) {
     this.storage = new Storage(config);
@@ -70,6 +74,10 @@ export class Processor {
 
   async queryByIntent(intentLabel: string): Promise<GraphNode[]> {
     return this.storage.queryByIntent(intentLabel);
+  }
+
+  getLastSavedGraph() {
+    return this.lastSavedGraph;
   }
 
   async onMessageReceived(event: any): Promise<RetrievalResult[]> {
@@ -258,7 +266,11 @@ export class Processor {
 
     await this.storage.saveEventChain(chain);
 
-    // --- 构建知识图谱（不含 Outcome 和 RESULTS_IN，等 onLlmOutput 补充） ---
+    // --- 从 messages 中提取最终回复文本 ---
+    const assistantTexts = this.extractAssistantTexts(messages);
+    const answerText = assistantTexts.join("\n");
+
+    // --- 构建完整知识图谱（含 Outcome 和 RESULTS_IN） ---
     const nodes: GraphNode[] = [];
     const rels: GraphRelationship[] = [];
 
@@ -312,15 +324,44 @@ export class Processor {
       }
     }
 
-    // 暂存图谱数据，等 onLlmOutput 补充 Outcome 节点后落盘
-    this.pendingGraphData.set(chain.taskId, {
-      chain,
-      toolNodes,
-      nodes,
-      actionNodes,
-      rels,
-      intentNode,
-    });
+    // --- Outcome 节点 + RESULTS_IN 权重 ---
+    const outcomeLabel =
+      answerText.length <= 80 ? answerText : answerText.slice(0, 78) + "…";
+    const outcomeNode: GraphNode = {
+      id: `outcome-${chain.id}`,
+      type: "Outcome",
+      label: outcomeLabel,
+      properties: {
+        fullText: answerText,
+        success: chain.outcome === "success",
+      },
+    };
+    nodes.push(outcomeNode);
+
+    if (actionNodes.length > 0) {
+      const actionWeights: Record<string, number> = {};
+      for (let i = 0; i < actionNodes.length; i++) {
+        const tn = toolNodes[i];
+        const resultText = tn ? this.getToolResultFullText(tn) : "";
+        if (resultText.length > 0 && answerText.length > 0) {
+          const lcs = this.longestCommonSubstringLen(resultText, answerText);
+          actionWeights[actionNodes[i].id] =
+            Math.round(Math.min(lcs / resultText.length, 1) * 1000) / 1000;
+        } else {
+          actionWeights[actionNodes[i].id] = 0;
+        }
+      }
+      rels.push({
+        from: actionNodes.map((n) => n.id),
+        to: [outcomeNode.id],
+        type: "RESULTS_IN",
+        properties: { actionWeights },
+      });
+    }
+
+    await this.storage.saveGraph(chain.id, nodes, rels);
+
+    this.lastSavedGraph = { chainId: chain.id, chain, nodes, rels };
     this.activeChains.delete(chain.taskId);
     if (this.currentRunId === chain.taskId) {
       this.currentRunId = null;
@@ -393,6 +434,19 @@ export class Processor {
 
     await this.storage.saveGraph(chain.id, nodes, rels);
     this.pendingGraphData.delete(chain.taskId);
+  }
+
+  private extractAssistantTexts(messages: any[]): string[] {
+    const texts: string[] = [];
+    for (const msg of messages) {
+      if (msg?.role !== "assistant" || !Array.isArray(msg?.content)) continue;
+      for (const block of msg.content) {
+        if (block?.type === "text" && block.text) {
+          texts.push(block.text);
+        }
+      }
+    }
+    return texts;
   }
 
   private extractToolNodes(messages: any[]): ToolNode[] {

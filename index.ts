@@ -12,7 +12,7 @@ import type {
   RetrievalResult,
 } from "./src/types";
 
-const PLUGIN_VERSION = "1.12";
+const PLUGIN_VERSION = "1.13";
 const DEFAULT_PREFIX = "hello openclaw,";
 const questionTimestampByKey = new Map<string, number>();
 let latestQuestionTimestamp: number | null = null;
@@ -445,8 +445,8 @@ export default definePluginEntry({
       });
     });
 
-    // ---- llm_output: 补充 Outcome 节点，落盘完整图谱 ----
-    api.on("llm_output", async (event: any) => {
+    // ---- llm_output: 纯日志记录 ----
+    api.on("llm_output", (event: any) => {
       log("llm_output", "llm_output", {
         content: safeStr(
           event?.text ?? event?.content ?? event?.response ?? event
@@ -456,36 +456,9 @@ export default definePluginEntry({
         taskId: event?.taskId,
         event,
       });
-
-      if (!processor || !pluginConfig) return;
-
-      try {
-        const pendingBefore = new Set((processor as any).pendingGraphData.keys());
-
-        await processor.onLlmOutput(event);
-
-        const pendingAfter = new Set((processor as any).pendingGraphData.keys());
-        const completed = [...pendingBefore].filter((k) => !pendingAfter.has(k));
-
-        const storage: any = (processor as any).storage;
-        const graphsMap: Map<string, { nodes: GraphNode[]; rels: GraphRelationship[] }> =
-          storage.graphs;
-
-        for (const taskId of completed) {
-          for (const [chainId, g] of graphsMap.entries()) {
-            const intentNode = g.nodes.find((n: GraphNode) => n.type === "Intent");
-            if (intentNode?.properties?.taskId === taskId) {
-              exportGraphData(chainId, g.nodes, g.rels, pluginConfig!);
-              break;
-            }
-          }
-        }
-      } catch (err: any) {
-        log("error", "llm_output processing failed", { error: String(err) });
-      }
     });
 
-    // ---- agent_end: 建图（不含 Outcome），导出清理后的 messages ----
+    // ---- agent_end: 建图 + 导出事件链和图谱 ----
     api.on("agent_end", async (event: any) => {
       rememberLatestQuestionForEvent(event);
       const rawMessages = event?.messages ?? event?.event?.messages;
@@ -523,19 +496,16 @@ export default definePluginEntry({
 
         await processor.onAgentEnd(agentEndEvent);
 
-        const storage: any = (processor as any).storage;
-        const chainsMap: Map<string, EventChain> = storage.chains;
-        for (const chain of chainsMap.values()) {
-          const matchTaskId = event?.runId ?? event?.taskId;
-          if (chain.taskId === matchTaskId) {
-            exportEventChainData(chain, pluginConfig!);
-            break;
-          }
+        const saved = processor.getLastSavedGraph();
+        if (saved) {
+          exportEventChainData(saved.chain, pluginConfig!);
+          exportGraphData(saved.chainId, saved.nodes, saved.rels, pluginConfig!);
         }
 
-        log("graph_build", "agent_end graph built", {
+        log("graph_build", "agent_end graph built and exported", {
           taskId: event?.taskId,
           runId: event?.runId,
+          chainId: saved?.chainId,
         });
       } catch (err: any) {
         log("error", "agent_end graph build failed", { error: String(err) });
