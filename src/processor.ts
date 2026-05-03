@@ -35,6 +35,18 @@ export class Processor {
   private pendingTaskId: string | null = null;
   // 当前活跃会话的 runId，工具事件与 agent_end 在缺少 runId 时按它定位
   private currentRunId: string | null = null;
+  // onAgentEnd 构建的待定图谱数据，等 onLlmOutput 补充 Outcome 后落盘
+  private pendingGraphData: Map<
+    string,
+    {
+      chain: EventChain;
+      toolNodes: ToolNode[];
+      nodes: GraphNode[];
+      actionNodes: GraphNode[];
+      rels: GraphRelationship[];
+      intentNode: GraphNode;
+    }
+  > = new Map();
 
   constructor(config: StorageConfig) {
     this.storage = new Storage(config);
@@ -216,7 +228,6 @@ export class Processor {
     const messages: any[] = event?.data?.messages ?? [];
     const toolNodes = this.extractToolNodes(messages);
 
-    // 仅当 messages 中有 tool call 时才覆盖链上已有的 toolSequence/events
     if (toolNodes.length > 0) {
       chain.toolSequence = toolNodes.map((t) => t.toolName);
       chain.events = [
@@ -247,7 +258,7 @@ export class Processor {
 
     await this.storage.saveEventChain(chain);
 
-    // --- 构建知识图谱 ---
+    // --- 构建知识图谱（不含 Outcome 和 RESULTS_IN，等 onLlmOutput 补充） ---
     const nodes: GraphNode[] = [];
     const rels: GraphRelationship[] = [];
 
@@ -261,7 +272,6 @@ export class Processor {
 
     const actionNodes: GraphNode[] = [];
     if (toolNodes.length > 0) {
-      // 新路径：从 messages 中提取的 tool call 节点建图
       for (const tn of toolNodes) {
         const actionNode: GraphNode = {
           id: `action-${chain.id}-${tn.toolCallId}`,
@@ -277,7 +287,6 @@ export class Processor {
         actionNodes.push(actionNode);
       }
     } else {
-      // 回退路径：从 before_tool_call/after_tool_call 积累的 toolSequence 建图
       for (const toolName of chain.toolSequence) {
         const actionNode: GraphNode = {
           id: `action-${chain.id}-${toolName}-${nodes.length}`,
@@ -297,44 +306,93 @@ export class Processor {
         type: "TRIGGERS",
       });
 
-      for (let i = 0; i < actionNodes.length - 1; i++) {
-        rels.push({
-          from: [actionNodes[i].id],
-          to: [actionNodes[i + 1].id],
-          type: "LEADS_TO",
-        });
-      }
-
-      // 依赖检测：仅在从 messages 提取了 toolNodes 时执行
       if (toolNodes.length > 0) {
         const dependsRels = this.detectDependencies(toolNodes, actionNodes);
         rels.push(...dependsRels);
       }
     }
 
-    const outcomeNode: GraphNode = {
-      id: `outcome-${chain.id}`,
-      type: "Outcome",
-      label: chain.outcome,
-      properties: {},
-    };
-    nodes.push(outcomeNode);
-
-    const resultFromIds =
-      actionNodes.length > 0
-        ? actionNodes.map((n) => n.id)
-        : [intentNode.id];
-    rels.push({
-      from: resultFromIds,
-      to: [outcomeNode.id],
-      type: "RESULTS_IN",
+    // 暂存图谱数据，等 onLlmOutput 补充 Outcome 节点后落盘
+    this.pendingGraphData.set(chain.taskId, {
+      chain,
+      toolNodes,
+      nodes,
+      actionNodes,
+      rels,
+      intentNode,
     });
-
-    await this.storage.saveGraph(chain.id, nodes, rels);
     this.activeChains.delete(chain.taskId);
     if (this.currentRunId === chain.taskId) {
       this.currentRunId = null;
     }
+  }
+
+  async onLlmOutput(event: any): Promise<void> {
+    const runId =
+      event?.data?.event?.runId ??
+      (() => {
+        try {
+          return JSON.parse(event?.data?.content)?.runId;
+        } catch {
+          return undefined;
+        }
+      })();
+
+    let pending = runId ? this.pendingGraphData.get(runId) : undefined;
+    if (!pending && this.pendingGraphData.size === 1) {
+      pending = this.pendingGraphData.values().next().value;
+    }
+    if (!pending) return;
+
+    const assistantTexts: string[] =
+      event?.data?.event?.assistantTexts ??
+      (() => {
+        try {
+          return JSON.parse(event?.data?.content)?.assistantTexts;
+        } catch {
+          return [];
+        }
+      })();
+    const answerText = assistantTexts.join("\n");
+
+    const { chain, toolNodes, nodes, actionNodes, rels, intentNode } = pending;
+
+    const outcomeLabel =
+      answerText.length <= 80 ? answerText : answerText.slice(0, 78) + "…";
+    const outcomeNode: GraphNode = {
+      id: `outcome-${chain.id}`,
+      type: "Outcome",
+      label: outcomeLabel,
+      properties: {
+        fullText: answerText,
+        success: chain.outcome === "success",
+      },
+    };
+    nodes.push(outcomeNode);
+
+    if (actionNodes.length > 0) {
+      const actionWeights: Record<string, number> = {};
+      for (let i = 0; i < actionNodes.length; i++) {
+        const tn = toolNodes[i];
+        const resultText = tn ? this.getToolResultFullText(tn) : "";
+        if (resultText.length > 0 && answerText.length > 0) {
+          const lcs = this.longestCommonSubstringLen(resultText, answerText);
+          actionWeights[actionNodes[i].id] =
+            Math.round(Math.min(lcs / resultText.length, 1) * 1000) / 1000;
+        } else {
+          actionWeights[actionNodes[i].id] = 0;
+        }
+      }
+      rels.push({
+        from: actionNodes.map((n) => n.id),
+        to: [outcomeNode.id],
+        type: "RESULTS_IN",
+        properties: { actionWeights },
+      });
+    }
+
+    await this.storage.saveGraph(chain.id, nodes, rels);
+    this.pendingGraphData.delete(chain.taskId);
   }
 
   private extractToolNodes(messages: any[]): ToolNode[] {
@@ -394,26 +452,40 @@ export class Processor {
     actionNodes: GraphNode[]
   ): GraphRelationship[] {
     const rels: GraphRelationship[] = [];
+    const MIN_LCS_LEN = 8;
+    const MIN_WEIGHT = 0.3;
 
     for (let i = 1; i < toolNodes.length; i++) {
       const current = toolNodes[i];
       const argValues = this.extractStringValues(current.arguments);
       if (argValues.length === 0) continue;
 
+      const totalArgLen = argValues.reduce((s, v) => s + v.length, 0);
+
       for (let j = 0; j < i; j++) {
         const prior = toolNodes[j];
         const priorText = this.getToolResultFullText(prior);
         if (!priorText) continue;
 
-        const hasDep = argValues.some(
-          (val) => val.length >= 4 && priorText.includes(val)
-        );
-        if (hasDep) {
-          rels.push({
-            from: [actionNodes[j].id],
-            to: [actionNodes[i].id],
-            type: "DEPENDS_ON",
-          });
+        let matchedLen = 0;
+        for (const val of argValues) {
+          if (val.length < 4) continue;
+          const lcs = this.longestCommonSubstringLen(val, priorText);
+          if (lcs >= MIN_LCS_LEN) {
+            matchedLen += lcs;
+          }
+        }
+        if (matchedLen > 0) {
+          const raw = matchedLen / totalArgLen;
+          const weight = Math.round(Math.min(raw, 1) * 1000) / 1000;
+          if (weight >= MIN_WEIGHT) {
+            rels.push({
+              from: [actionNodes[j].id],
+              to: [actionNodes[i].id],
+              type: "DEPENDS_ON",
+              properties: { weight },
+            });
+          }
         }
       }
     }
@@ -452,6 +524,28 @@ export class Processor {
       }
     }
     return parts.join("\n");
+  }
+
+  private longestCommonSubstringLen(short: string, long: string): number {
+    if (!short || !long) return 0;
+    const a = short;
+    const b = long;
+    const m = a.length;
+    const n = b.length;
+    let best = 0;
+    const prev = new Uint16Array(n + 1);
+    const curr = new Uint16Array(n + 1);
+    for (let i = 1; i <= m; i++) {
+      curr.fill(0);
+      for (let j = 1; j <= n; j++) {
+        if (a[i - 1] === b[j - 1]) {
+          curr[j] = prev[j - 1] + 1;
+          if (curr[j] > best) best = curr[j];
+        }
+      }
+      prev.set(curr);
+    }
+    return best;
   }
 
   private findChainForToolEvent(event: any): EventChain | undefined {

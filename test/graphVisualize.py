@@ -22,7 +22,6 @@ NODE_COLORS = {
 
 EDGE_STYLES = {
     "TRIGGERS": {"color": "#4CAF50", "style": "solid"},
-    "LEADS_TO": {"color": "#2196F3", "style": "solid"},
     "DEPENDS_ON": {"color": "#9C27B0", "style": "dashed"},
     "RESULTS_IN": {"color": "#FF9800", "style": "solid"},
 }
@@ -53,9 +52,13 @@ def build_graph(chains):
             G.add_node(n["id"], type=n["type"], label=short_label(n))
 
         for rel in chain["rels"]:
+            props = rel.get("properties") or {}
+            weight = props.get("weight")
+            action_weights = props.get("actionWeights") or {}
             for src in rel["from"]:
                 for dst in rel["to"]:
-                    G.add_edge(src, dst, rel_type=rel["type"])
+                    w = action_weights.get(src, weight)
+                    G.add_edge(src, dst, rel_type=rel["type"], weight=w)
     return G
 
 
@@ -65,23 +68,16 @@ def layout_graph(G):
     actions = [n for n, d in G.nodes(data=True) if d["type"] == "Action"]
     outcomes = [n for n, d in G.nodes(data=True) if d["type"] == "Outcome"]
 
-    # order actions by LEADS_TO chain
-    ordered_actions = []
-    leads_to = {}
+    # order actions by topological sort of DEPENDS_ON edges, fallback to insertion order
+    dep_graph = nx.DiGraph()
+    dep_graph.add_nodes_from(actions)
     for u, v, d in G.edges(data=True):
-        if d["rel_type"] == "LEADS_TO":
-            leads_to[u] = v
-    # find the head of the chain (action that is not a LEADS_TO target)
-    targets = set(leads_to.values())
-    heads = [a for a in actions if a not in targets]
-    for head in heads:
-        cur = head
-        while cur and cur not in ordered_actions:
-            ordered_actions.append(cur)
-            cur = leads_to.get(cur)
-    for a in actions:
-        if a not in ordered_actions:
-            ordered_actions.append(a)
+        if d["rel_type"] == "DEPENDS_ON" and u in dep_graph and v in dep_graph:
+            dep_graph.add_edge(u, v)
+    try:
+        ordered_actions = list(nx.topological_sort(dep_graph))
+    except nx.NetworkXUnfeasible:
+        ordered_actions = actions
 
     pos = {}
     x_intent, x_action, x_outcome = 0, 2, 4
@@ -124,6 +120,19 @@ def draw(G, pos):
             arrows=True, arrowsize=16, arrowstyle="-|>",
             connectionstyle="arc3,rad=0.08", width=1.5, alpha=0.75,
             min_source_margin=28, min_target_margin=28,
+        )
+
+    # draw weight labels on edges that have them
+    edge_labels = {}
+    for u, v, d in G.edges(data=True):
+        w = d.get("weight")
+        if w is not None and isinstance(w, (int, float)):
+            edge_labels[(u, v)] = f"{w:.3f}"
+    if edge_labels:
+        nx.draw_networkx_edge_labels(
+            G, pos, edge_labels, ax=ax,
+            font_size=6, font_color="#666",
+            label_pos=0.5, bbox=dict(alpha=0),
         )
 
     legend_handles = [

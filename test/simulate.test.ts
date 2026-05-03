@@ -21,7 +21,7 @@ const CURRENT_DIR = path.dirname(fileURLToPath(import.meta.url));
  * - 其余四个 *_PATH 与本测试需要持久化的产物一一对应
  */
 class Paths {
-  static readonly LOG_PATH = path.resolve(CURRENT_DIR, "v1.7.log");
+  static readonly LOG_PATH = path.resolve(CURRENT_DIR, "input.log");
   static readonly OUTPUT_DIR = path.resolve(CURRENT_DIR, "output", "simulate");
   static readonly EVENT_CHAINS_PATH = path.join(
     Paths.OUTPUT_DIR,
@@ -87,11 +87,15 @@ async function dispatchLogEvent(processor: Processor, event: any): Promise<void>
       processor.onAfterToolCall(event);
       break;
     case "agent_end":
-      // agent_end：归档事件链 + 写入图谱
+      // agent_end：归档事件链 + 构建待定图谱
       await processor.onAgentEnd(event);
       break;
+    case "llm_output":
+      // llm_output：补充 Outcome 节点 + RESULTS_IN 权重，落盘图谱
+      await processor.onLlmOutput(event);
+      break;
     default:
-      // 其它类别（生命周期、插件注册、LLM 输出等）此处不参与回放
+      // 其它类别（生命周期、插件注册等）此处不参与回放
       break;
   }
 }
@@ -328,7 +332,7 @@ describe("simulate: replay v1.7.log via Processor", () => {
 
       // 关系类型应限定在 Processor 实际产出的几种之内
       for (const r of g.rels) {
-        expect(["TRIGGERS", "LEADS_TO", "RESULTS_IN", "DEPENDS_ON"]).toContain(r.type);
+        expect(["TRIGGERS", "RESULTS_IN", "DEPENDS_ON"]).toContain(r.type);
       }
 
       // Intent 是图的起点，TRIGGERS 关系的 from 包含 Intent
@@ -599,12 +603,18 @@ describe("simulate: replay example.log (message-based graph)", () => {
     expect(actions.length).toBe(11);
     expect(outcomes.length).toBe(1);
 
+    // Outcome 节点的 label 应来自 llm_output 的 assistantTexts
+    const outcome = outcomes[0];
+    expect(outcome.label.length).toBeGreaterThan(0);
+    expect(outcome.properties.fullText).toBeDefined();
+    expect(outcome.properties.fullText.length).toBeGreaterThan(outcome.label.length);
+
     for (const r of g.rels) {
-      expect(["TRIGGERS", "LEADS_TO", "RESULTS_IN", "DEPENDS_ON"]).toContain(r.type);
+      expect(["TRIGGERS", "RESULTS_IN", "DEPENDS_ON"]).toContain(r.type);
     }
   });
 
-  it("应检测到 DEPENDS_ON 依赖关系（web_crawl URL 来自 web_search 结果）", () => {
+  it("应检测到 DEPENDS_ON 依赖关系（web_crawl URL 来自 web_search 结果）且携带 weight", () => {
     const g = collectedGraphs[0];
     const dependsRels = g.rels.filter((r) => r.type === "DEPENDS_ON");
     expect(dependsRels.length).toBeGreaterThan(0);
@@ -618,6 +628,29 @@ describe("simulate: replay example.log (message-based graph)", () => {
       (r) => r.from.includes(firstActionId) && r.to.includes(secondActionId)
     );
     expect(dep).toBeDefined();
+    expect(dep!.properties).toBeDefined();
+    expect(dep!.properties!.weight).toBeGreaterThan(0);
+    expect(dep!.properties!.weight).toBeLessThanOrEqual(1);
+
+    // 所有 DEPENDS_ON 边都应有 weight
+    for (const r of dependsRels) {
+      expect(r.properties?.weight).toBeGreaterThan(0);
+    }
+  });
+
+  it("RESULTS_IN 边应携带 actionWeights 属性", () => {
+    const g = collectedGraphs[0];
+    const resultsIn = g.rels.find((r) => r.type === "RESULTS_IN");
+    expect(resultsIn).toBeDefined();
+    expect(resultsIn!.properties).toBeDefined();
+    expect(resultsIn!.properties!.actionWeights).toBeDefined();
+    const weights = resultsIn!.properties!.actionWeights as Record<string, number>;
+    const actions = g.nodes.filter((n) => n.type === "Action");
+    for (const a of actions) {
+      expect(weights[a.id]).toBeDefined();
+      expect(weights[a.id]).toBeGreaterThanOrEqual(0);
+      expect(weights[a.id]).toBeLessThanOrEqual(1);
+    }
   });
 
   it("Action 节点应携带 toolCallId 属性", () => {
