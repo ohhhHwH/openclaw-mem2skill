@@ -20,6 +20,7 @@ const GRAPH_JSONL_PATH = path.resolve(
 );
 
 const EMBEDDING_DIM = 64;
+const SCORE_THRESHOLD = 0.8;
 
 function simpleEmbedding(text: string, dim: number = EMBEDDING_DIM): number[] {
   const vec = new Array(dim).fill(0);
@@ -51,15 +52,6 @@ interface GraphEntry {
   timestamp: number;
 }
 
-interface ChainPrompt {
-  chainId: string;
-  intent: string;
-  actions: string[];
-  outcome: string;
-  dependencyChain: string[];
-  prompt: string;
-}
-
 function loadGraphEntries(): GraphEntry[] {
   const raw = fs.readFileSync(GRAPH_JSONL_PATH, "utf-8");
   return raw
@@ -68,75 +60,127 @@ function loadGraphEntries(): GraphEntry[] {
     .map((l) => JSON.parse(l));
 }
 
-function buildChainPrompt(entry: GraphEntry): ChainPrompt {
+// 从 DEPENDS_ON 边构建拓扑排序，体现工具调用的因果顺序
+function topoSortActions(
+  actionNodes: GraphNode[],
+  dependsRels: GraphRelationship[]
+): GraphNode[] {
+  const idToNode = new Map(actionNodes.map((n) => [n.id, n]));
+  const inDegree = new Map(actionNodes.map((n) => [n.id, 0]));
+  const adj = new Map<string, string[]>(actionNodes.map((n) => [n.id, []]));
+
+  for (const dep of dependsRels) {
+    const fromId = dep.from.find((id) => idToNode.has(id));
+    const toId = dep.to.find((id) => idToNode.has(id));
+    if (fromId && toId) {
+      adj.get(fromId)!.push(toId);
+      inDegree.set(toId, (inDegree.get(toId) ?? 0) + 1);
+    }
+  }
+
+  const queue = actionNodes.filter((n) => inDegree.get(n.id) === 0);
+  const sorted: GraphNode[] = [];
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+    sorted.push(node);
+    for (const nextId of adj.get(node.id) ?? []) {
+      const deg = (inDegree.get(nextId) ?? 1) - 1;
+      inDegree.set(nextId, deg);
+      if (deg === 0) {
+        const next = idToNode.get(nextId);
+        if (next) queue.push(next);
+      }
+    }
+  }
+
+  // 追加未被拓扑排序覆盖的孤立节点
+  for (const n of actionNodes) {
+    if (!sorted.includes(n)) sorted.push(n);
+  }
+  return sorted;
+}
+
+function buildPrompt(entry: GraphEntry): string {
   const intentNode = entry.nodes.find((n) => n.type === "Intent")!;
   const outcomeNode = entry.nodes.find((n) => n.type === "Outcome");
   const actionNodes = entry.nodes.filter((n) => n.type === "Action");
-
   const dependsRels = entry.rels.filter((r) => r.type === "DEPENDS_ON");
   const resultsInRel = entry.rels.find((r) => r.type === "RESULTS_IN");
+  const actionWeights = (resultsInRel?.properties?.actionWeights ?? {}) as Record<string, number>;
 
-  const depChain: string[] = [];
+  // 按因果拓扑排序
+  const sorted = topoSortActions(actionNodes, dependsRels);
+
+  // 构建每个 action 的上游依赖映射 (toId -> fromIds[])
+  const upstreamMap = new Map<string, { fromLabel: string; weight: number }[]>();
   for (const dep of dependsRels) {
     const fromNode = entry.nodes.find((n) => dep.from.includes(n.id));
     const toNode = entry.nodes.find((n) => dep.to.includes(n.id));
     if (fromNode && toNode) {
-      const w = dep.properties?.weight ?? 0;
-      depChain.push(
-        `${fromNode.label}(${fromNode.properties.toolCallId ?? fromNode.id}) → ${toNode.label}(${toNode.properties.toolCallId ?? toNode.id}) [weight=${w}]`
-      );
+      if (!upstreamMap.has(toNode.id)) upstreamMap.set(toNode.id, []);
+      upstreamMap.get(toNode.id)!.push({
+        fromLabel: formatActionLabel(fromNode),
+        weight: dep.properties?.weight ?? 0,
+      });
     }
   }
 
-  const actionWeights = resultsInRel?.properties?.actionWeights as
-    | Record<string, number>
-    | undefined;
-  const actionDescs = actionNodes.map((a) => {
-    const w = actionWeights?.[a.id] ?? 0;
-    const args = a.properties.arguments
-      ? JSON.stringify(a.properties.arguments)
-      : "";
-    return `  - ${a.label}(${a.properties.toolCallId ?? a.id}): args=${args}, resultWeight=${w}`;
-  });
+  const lines: string[] = [];
+  lines.push(`用户意图: ${intentNode.label}`);
+  lines.push("");
+  lines.push(`执行路径:`);
 
-  const outcomeText = outcomeNode?.label ?? "(无)";
+  for (let i = 0; i < sorted.length; i++) {
+    const a = sorted[i];
+    const query = extractQuery(a);
+    const rw = actionWeights[a.id];
+    const rwTag = rw > 0.01 ? ` [贡献度=${rw}]` : "";
 
-  const prompt = [
-    `[历史事件链] chainId=${entry.chainId}`,
-    `意图: ${intentNode.label}`,
-    `动作序列(${actionNodes.length}步):`,
-    ...actionDescs,
-    depChain.length > 0
-      ? `依赖关系:\n${depChain.map((d) => `  ${d}`).join("\n")}`
-      : "依赖关系: 无",
-    `结果: ${outcomeText}`,
-  ].join("\n");
+    const upstream = upstreamMap.get(a.id);
+    let causeTag = "";
+    if (upstream && upstream.length > 0) {
+      // 取权重最高的上游作为因果说明
+      const top = upstream.sort((a, b) => b.weight - a.weight)[0];
+      causeTag = ` ← 基于 ${top.fromLabel} 的结果`;
+    }
 
-  return {
-    chainId: entry.chainId,
-    intent: intentNode.label,
-    actions: actionNodes.map((a) => a.label),
-    outcome: outcomeText,
-    dependencyChain: depChain,
-    prompt,
-  };
+    lines.push(`  ${i + 1}. ${a.label}(${query})${causeTag}${rwTag}`);
+  }
+
+  if (outcomeNode) {
+    lines.push("");
+    lines.push(`结果: ${outcomeNode.label}`);
+  }
+
+  return lines.join("\n");
+}
+
+function formatActionLabel(node: GraphNode): string {
+  const q = extractQuery(node);
+  return `${node.label}(${q})`;
+}
+
+function extractQuery(node: GraphNode): string {
+  const args = node.properties.arguments;
+  if (!args) return "";
+  if (typeof args === "string") return args;
+  return args.query ?? args.url ?? Object.values(args)[0] ?? "";
 }
 
 function retrieveChains(
   query: string,
-  entries: GraphEntry[],
-  chainPrompts: ChainPrompt[]
-): Array<{ chainPrompt: ChainPrompt; score: number }> {
+  entries: GraphEntry[]
+): Array<{ prompt: string; score: number; intent: string }> {
   const queryEmbedding = simpleEmbedding(query);
 
-  const results = entries.map((entry, idx) => {
+  const results = entries.map((entry) => {
     const intentNode = entry.nodes.find((n) => n.type === "Intent")!;
     const actionNodes = entry.nodes.filter((n) => n.type === "Action");
     const embeddingText =
       intentNode.label + " " + actionNodes.map((a) => a.label).join(" ");
     const chainEmbedding = simpleEmbedding(embeddingText);
     const score = cosineSimilarity(queryEmbedding, chainEmbedding);
-    return { chainPrompt: chainPrompts[idx], score };
+    return { prompt: buildPrompt(entry), score, intent: intentNode.label };
   });
 
   results.sort((a, b) => b.score - a.score);
@@ -145,22 +189,16 @@ function retrieveChains(
 
 describe("retrieval: 历史事件链检索测试", () => {
   let graphEntries: GraphEntry[];
-  let chainPrompts: ChainPrompt[];
 
   beforeAll(() => {
     graphEntries = loadGraphEntries();
-    chainPrompts = graphEntries.map(buildChainPrompt);
   });
 
-  it("应能加载 graph.jsonl 并构建事件链 prompt", () => {
+  it("应能加载 graph.jsonl", () => {
     expect(graphEntries.length).toBe(4);
-    expect(chainPrompts.length).toBe(4);
-
-    for (const cp of chainPrompts) {
-      expect(cp.chainId).toBeTruthy();
-      expect(cp.intent).toBeTruthy();
-      expect(cp.actions.length).toBeGreaterThan(0);
-      expect(cp.prompt.length).toBeGreaterThan(0);
+    for (const entry of graphEntries) {
+      expect(entry.nodes.find((n) => n.type === "Intent")).toBeDefined();
+      expect(entry.nodes.filter((n) => n.type === "Action").length).toBeGreaterThan(0);
     }
   });
 
@@ -173,29 +211,32 @@ describe("retrieval: 历史事件链检索测试", () => {
 
   for (const query of queries) {
     it(`检索: "${query}"`, () => {
-      const results = retrieveChains(query, graphEntries, chainPrompts);
+      const all = retrieveChains(query, graphEntries);
+      const hits = all.filter((r) => r.score >= SCORE_THRESHOLD);
 
-      expect(results.length).toBe(graphEntries.length);
+      console.log(`\n查询: ${query}`);
+      console.log(`命中: ${hits.length}/${all.length} (阈值=${SCORE_THRESHOLD})`);
 
-      console.log(`\n${"=".repeat(60)}`);
-      console.log(`查询: ${query}`);
-      console.log(`${"=".repeat(60)}`);
-
-      for (let i = 0; i < results.length; i++) {
-        const { chainPrompt, score } = results[i];
-        console.log(`\n--- 排名 #${i + 1} | 置信度: ${score.toFixed(4)} ---`);
-        console.log(chainPrompt.prompt);
+      if (hits.length === 0) {
+        console.log(`无匹配的历史事件链 (最高置信度=${all[0]?.score.toFixed(4) ?? "N/A"})`);
       }
 
-      console.log(`\n${"=".repeat(60)}\n`);
+      for (let i = 0; i < hits.length; i++) {
+        const { prompt, score } = hits[i];
+        console.log(`\n#${i + 1} 置信度: ${score.toFixed(4)}`);
+        console.log(prompt);
+      }
 
-      for (const r of results) {
+      console.log("");
+
+      // 分数合法性
+      for (const r of all) {
         expect(r.score).toBeGreaterThanOrEqual(-1);
         expect(r.score).toBeLessThanOrEqual(1);
       }
-
-      for (let i = 0; i < results.length - 1; i++) {
-        expect(results[i].score).toBeGreaterThanOrEqual(results[i + 1].score);
+      // 降序排列
+      for (let i = 0; i < all.length - 1; i++) {
+        expect(all[i].score).toBeGreaterThanOrEqual(all[i + 1].score);
       }
     });
   }
