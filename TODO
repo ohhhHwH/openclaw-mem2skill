@@ -56,5 +56,5 @@
     # TODO 用户评价/打分体系->准确性 速度 回答格式
     # TODO 多用户同时输入，事件链如何建立
     # TODO : 日志中如何区分是哪个agent_plan的工具调用？如果有同步的tool call如何区分 - 日志上看不出来，暂时没有并行调用吧
-
+    # TODO : LOG 加入统一配置中去
 #TODO 查看赛题说明 https://bytedance.larkoffice.com/wiki/TYewweOPuiHMtBkA1aXcldJonic

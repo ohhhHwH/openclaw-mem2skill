@@ -1,10 +1,24 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import fs from "fs";
+import path from "path";
 import { log } from "./src/logger";
+import { Processor, simpleEmbedding } from "./src/processor";
+import { resolveConfig } from "./src/config";
+import type { PluginConfig } from "./src/config";
+import type {
+  EventChain,
+  GraphNode,
+  GraphRelationship,
+  RetrievalResult,
+} from "./src/types";
 
+const PLUGIN_VERSION = "1.12";
 const DEFAULT_PREFIX = "hello openclaw,";
-const PLUGIN_VERSION = "1.11";
 const questionTimestampByKey = new Map<string, number>();
 let latestQuestionTimestamp: number | null = null;
+
+let processor: Processor | null = null;
+let pluginConfig: PluginConfig | null = null;
 
 function safeStr(val: any): string {
   if (val === undefined || val === null) return "";
@@ -29,7 +43,6 @@ function collectEventKeys(event: any): string[] {
     event?.ctx?.MessageSid,
     event?.ctx?.SessionKey,
   ];
-
   return [...new Set(keys.filter((key): key is string => Boolean(key)))];
 }
 
@@ -52,14 +65,12 @@ function resolveQuestionTimestamp(event: any, messages: any[]): number | null {
     const timestamp = questionTimestampByKey.get(key);
     if (typeof timestamp === "number") return timestamp;
   }
-
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message?.role === "user" && typeof message?.timestamp === "number") {
       return message.timestamp;
     }
   }
-
   return latestQuestionTimestamp;
 }
 
@@ -69,20 +80,12 @@ function cleanMessagesSinceQuestion(event: any): {
 } {
   const rawMessages = event?.messages ?? event?.event?.messages;
   if (!Array.isArray(rawMessages)) {
-    return {
-      messages: rawMessages,
-      questionTimestamp: latestQuestionTimestamp,
-    };
+    return { messages: rawMessages, questionTimestamp: latestQuestionTimestamp };
   }
-
   const questionTimestamp = resolveQuestionTimestamp(event, rawMessages);
   if (typeof questionTimestamp !== "number") {
-    return {
-      messages: rawMessages,
-      questionTimestamp: null,
-    };
+    return { messages: rawMessages, questionTimestamp: null };
   }
-
   let startIndex = -1;
   for (let i = rawMessages.length - 1; i >= 0; i--) {
     const message = rawMessages[i];
@@ -95,14 +98,9 @@ function cleanMessagesSinceQuestion(event: any): {
       break;
     }
   }
-
   if (startIndex !== -1) {
-    return {
-      messages: rawMessages.slice(startIndex),
-      questionTimestamp,
-    };
+    return { messages: rawMessages.slice(startIndex), questionTimestamp };
   }
-
   return {
     messages: rawMessages.filter(
       (message: any) =>
@@ -113,11 +111,223 @@ function cleanMessagesSinceQuestion(event: any): {
   };
 }
 
+// ---- 检索结果 → prompt 文本 ----
+
+function extractQuery(node: GraphNode): string {
+  const args = node.properties.arguments;
+  if (!args) return "";
+  if (typeof args === "string") return args;
+  return args.query ?? args.url ?? Object.values(args)[0] ?? "";
+}
+
+function formatActionLabel(node: GraphNode): string {
+  return `${node.label}(${extractQuery(node)})`;
+}
+
+interface GraphEntry {
+  chainId: string;
+  nodes: GraphNode[];
+  rels: GraphRelationship[];
+}
+
+function topoSortActions(
+  actionNodes: GraphNode[],
+  dependsRels: GraphRelationship[]
+): GraphNode[] {
+  const idToNode = new Map(actionNodes.map((n) => [n.id, n]));
+  const inDegree = new Map(actionNodes.map((n) => [n.id, 0]));
+  const adj = new Map<string, string[]>(actionNodes.map((n) => [n.id, []]));
+
+  for (const dep of dependsRels) {
+    const fromId = dep.from.find((id) => idToNode.has(id));
+    const toId = dep.to.find((id) => idToNode.has(id));
+    if (fromId && toId) {
+      adj.get(fromId)!.push(toId);
+      inDegree.set(toId, (inDegree.get(toId) ?? 0) + 1);
+    }
+  }
+
+  const queue = actionNodes.filter((n) => inDegree.get(n.id) === 0);
+  const sorted: GraphNode[] = [];
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+    sorted.push(node);
+    for (const nextId of adj.get(node.id) ?? []) {
+      const deg = (inDegree.get(nextId) ?? 1) - 1;
+      inDegree.set(nextId, deg);
+      if (deg === 0) {
+        const next = idToNode.get(nextId);
+        if (next) queue.push(next);
+      }
+    }
+  }
+  for (const n of actionNodes) {
+    if (!sorted.includes(n)) sorted.push(n);
+  }
+  return sorted;
+}
+
+function buildPromptFromGraph(entry: GraphEntry): string {
+  const intentNode = entry.nodes.find((n) => n.type === "Intent")!;
+  const outcomeNode = entry.nodes.find((n) => n.type === "Outcome");
+  const actionNodes = entry.nodes.filter((n) => n.type === "Action");
+  const dependsRels = entry.rels.filter((r) => r.type === "DEPENDS_ON");
+  const resultsInRel = entry.rels.find((r) => r.type === "RESULTS_IN");
+  const actionWeights = (resultsInRel?.properties?.actionWeights ?? {}) as Record<string, number>;
+
+  const sorted = topoSortActions(actionNodes, dependsRels);
+
+  const upstreamMap = new Map<string, { fromLabel: string; weight: number }[]>();
+  for (const dep of dependsRels) {
+    const fromNode = entry.nodes.find((n) => dep.from.includes(n.id));
+    const toNode = entry.nodes.find((n) => dep.to.includes(n.id));
+    if (fromNode && toNode) {
+      if (!upstreamMap.has(toNode.id)) upstreamMap.set(toNode.id, []);
+      upstreamMap.get(toNode.id)!.push({
+        fromLabel: formatActionLabel(fromNode),
+        weight: dep.properties?.weight ?? 0,
+      });
+    }
+  }
+
+  const lines: string[] = [];
+  lines.push(`用户意图: ${intentNode.label}`);
+  lines.push("");
+  lines.push(`执行路径:`);
+
+  for (let i = 0; i < sorted.length; i++) {
+    const a = sorted[i];
+    const query = extractQuery(a);
+    const rw = actionWeights[a.id];
+    const rwTag = rw > 0.01 ? ` [贡献度=${rw}]` : "";
+
+    const upstream = upstreamMap.get(a.id);
+    let causeTag = "";
+    if (upstream && upstream.length > 0) {
+      const top = upstream.sort((x, y) => y.weight - x.weight)[0];
+      causeTag = ` ← 基于 ${top.fromLabel} 的结果`;
+    }
+
+    lines.push(`  ${i + 1}. ${a.label}(${query})${causeTag}${rwTag}`);
+  }
+
+  if (outcomeNode) {
+    lines.push("");
+    lines.push(`结果: ${outcomeNode.label}`);
+  }
+
+  return lines.join("\n");
+}
+
+function buildRetrievalPrompt(
+  hits: Array<{ result: RetrievalResult; graphEntry?: GraphEntry }>,
+): string {
+  if (hits.length === 0) return "";
+
+  const sections: string[] = [];
+  sections.push("以下是与当前问题相关的历史执行记录，可参考其中的工具调用路径：");
+  sections.push("");
+
+  for (let i = 0; i < hits.length; i++) {
+    const { result, graphEntry } = hits[i];
+    sections.push(`--- 历史记录 #${i + 1} (置信度: ${result.score.toFixed(4)}) ---`);
+    if (graphEntry) {
+      sections.push(buildPromptFromGraph(graphEntry));
+    } else {
+      sections.push(`用户意图: ${result.chain.userIntent}`);
+      sections.push(`工具序列: ${result.chain.toolSequence.join(" → ")}`);
+    }
+    sections.push("");
+  }
+
+  return sections.join("\n");
+}
+
+// ---- 图谱数据导出 ----
+
+function ensureDir(dir: string): void {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+function exportGraphData(
+  chainId: string,
+  nodes: GraphNode[],
+  rels: GraphRelationship[],
+  config: PluginConfig,
+): void {
+  ensureDir(config.graphDataDir);
+  const timestamp = Date.now();
+
+  const rawData = {
+    chainId,
+    timestamp,
+    nodes: nodes.map((n) => ({
+      id: n.id,
+      type: n.type,
+      label: n.label,
+      properties: n.properties,
+    })),
+    rels,
+  };
+  const rawPath = path.join(config.graphDataDir, `${chainId}_raw.json`);
+  fs.writeFileSync(rawPath, JSON.stringify(rawData, null, 2), "utf-8");
+
+  const vectorData = {
+    chainId,
+    timestamp,
+    nodes: nodes.map((n) => ({
+      id: n.id,
+      type: n.type,
+      embedding: simpleEmbedding(n.label, config.embeddingDim),
+      properties: n.properties,
+    })),
+    rels,
+  };
+  const vectorPath = path.join(config.graphDataDir, `${chainId}_vector.json`);
+  fs.writeFileSync(vectorPath, JSON.stringify(vectorData, null, 2), "utf-8");
+
+  log("graph_export", `graph data exported: ${rawPath}, ${vectorPath}`, { chainId });
+}
+
+function exportEventChainData(
+  chain: EventChain,
+  config: PluginConfig,
+): void {
+  ensureDir(config.graphDataDir);
+
+  const rawData = {
+    id: chain.id,
+    taskId: chain.taskId,
+    timestamp: chain.timestamp,
+    userIntent: chain.userIntent,
+    toolSequence: chain.toolSequence,
+    outcome: chain.outcome,
+    events: chain.events,
+  };
+  const rawPath = path.join(config.graphDataDir, `chain_${chain.id}_raw.json`);
+  fs.writeFileSync(rawPath, JSON.stringify(rawData, null, 2), "utf-8");
+
+  const vectorData = {
+    id: chain.id,
+    taskId: chain.taskId,
+    userIntent: chain.userIntent,
+    toolSequence: chain.toolSequence,
+    outcome: chain.outcome,
+    embedding: chain.embedding,
+  };
+  const vectorPath = path.join(config.graphDataDir, `chain_${chain.id}_vector.json`);
+  fs.writeFileSync(vectorPath, JSON.stringify(vectorData, null, 2), "utf-8");
+
+  log("chain_export", `event chain exported: ${rawPath}, ${vectorPath}`, { chainId: chain.id });
+}
+
 export default definePluginEntry({
   id: "memory2skill",
   name: "Memory to Skill",
   description:
-    "Captures user input, agent plans, skill invocations and tool calls into logs",
+    "Captures user input, agent plans, skill invocations and tool calls; retrieves similar historical chains and builds knowledge graphs",
 
   register(api) {
     log("plugin", `memory2skill v${PLUGIN_VERSION} registered`, {
@@ -126,8 +336,20 @@ export default definePluginEntry({
 
     if (api.registrationMode !== "full") return;
 
-    // --- api.on hooks ---
-    api.on("message_received", (event: any) => {
+    const userConfig = (api as any).config ?? {};
+    pluginConfig = resolveConfig(userConfig);
+
+    processor = new Processor({
+      lanceDbPath: pluginConfig.lanceDbPath,
+      graphLogPath: pluginConfig.graphLogPath,
+    });
+
+    processor.init().catch((err: any) => {
+      log("error", "processor init failed", { error: String(err) });
+    });
+
+    // ---- message_received: 检索历史事件链，构建 prompt 注入 ----
+    api.on("message_received", async (event: any) => {
       const content =
         typeof event === "string"
           ? event
@@ -145,44 +367,75 @@ export default definePluginEntry({
         questionTimestamp,
         event,
       });
+
+      if (!processor || !pluginConfig) return;
+
+      try {
+        const results = await processor.onMessageReceived({
+          time: Date.now(),
+          data: {
+            original: content,
+            taskId: event?.taskId ?? `task-${Date.now()}`,
+          },
+        });
+
+        const threshold = pluginConfig.scoreThreshold;
+        const filtered = results.filter((r) => r.score >= threshold);
+
+        if (filtered.length === 0) {
+          log("retrieval", "no hits above threshold", {
+            total: results.length,
+            threshold,
+            topScore: results[0]?.score,
+          });
+          return;
+        }
+
+        const storage: any = (processor as any).storage;
+        const graphsMap: Map<string, { nodes: GraphNode[]; rels: GraphRelationship[] }> =
+          (storage as any).graphs;
+
+        const hits = filtered.map((result) => {
+          let graphEntry: GraphEntry | undefined;
+          for (const [chainId, g] of graphsMap.entries()) {
+            const intentNode = g.nodes.find((n: GraphNode) => n.type === "Intent");
+            if (intentNode?.properties?.taskId === result.chain.taskId) {
+              graphEntry = { chainId, nodes: g.nodes, rels: g.rels };
+              break;
+            }
+          }
+          return { result, graphEntry };
+        });
+
+        const prompt = buildRetrievalPrompt(hits);
+
+        log("retrieval", "hits found", {
+          query: content,
+          hitCount: filtered.length,
+          total: results.length,
+          threshold,
+          prompt,
+        });
+
+        if (prompt && typeof (api as any).prependSystemMessage === "function") {
+          (api as any).prependSystemMessage(prompt);
+        }
+      } catch (err: any) {
+        log("error", "retrieval failed", { error: String(err) });
+      }
     });
 
-    // api.on("before_tool_call", (event: any) => {
-    //   log(
-    //     "tool_call",
-    //     `before_tool_call: ${event?.name ?? event?.toolName ?? "?"}`,
-    //     {
-    //       toolName: event?.name ?? event?.toolName,
-    //       parameters: safeStr(
-    //         event?.parameters ?? event?.params ?? event?.input
-    //       ),
-    //       taskId: event?.taskId,
-    //       event,
-    //     }
-    //   );
-    // });
-
-    // api.on("after_tool_call", (event: any) => {
-    //   log(
-    //     "tool_result",
-    //     `after_tool_call: ${event?.name ?? event?.toolName ?? "?"}`,
-    //     {
-    //       toolName: event?.name ?? event?.toolName,
-    //       result: safeStr(event?.result),
-    //       success: event?.success,
-    //       duration: event?.duration,
-    //       taskId: event?.taskId,
-    //       event,
-    //     }
-    //   );
-    // });
-
+    // ---- reply_dispatch ----
     api.on("reply_dispatch", (event: any) => {
       rememberLatestQuestionForEvent(event);
       log("agent_plan", "reply_dispatch", {
         content: safeStr(event),
         event,
       });
+
+      if (processor) {
+        processor.onReplyDispatch(event);
+      }
     });
 
     api.on("gateway_start", (event: any) => {
@@ -192,8 +445,8 @@ export default definePluginEntry({
       });
     });
 
-    // --- llm_output: raw model response ---
-    api.on("llm_output", (event: any) => {
+    // ---- llm_output: 补充 Outcome 节点，落盘完整图谱 ----
+    api.on("llm_output", async (event: any) => {
       log("llm_output", "llm_output", {
         content: safeStr(
           event?.text ?? event?.content ?? event?.response ?? event
@@ -203,10 +456,37 @@ export default definePluginEntry({
         taskId: event?.taskId,
         event,
       });
+
+      if (!processor || !pluginConfig) return;
+
+      try {
+        const pendingBefore = new Set((processor as any).pendingGraphData.keys());
+
+        await processor.onLlmOutput(event);
+
+        const pendingAfter = new Set((processor as any).pendingGraphData.keys());
+        const completed = [...pendingBefore].filter((k) => !pendingAfter.has(k));
+
+        const storage: any = (processor as any).storage;
+        const graphsMap: Map<string, { nodes: GraphNode[]; rels: GraphRelationship[] }> =
+          storage.graphs;
+
+        for (const taskId of completed) {
+          for (const [chainId, g] of graphsMap.entries()) {
+            const intentNode = g.nodes.find((n: GraphNode) => n.type === "Intent");
+            if (intentNode?.properties?.taskId === taskId) {
+              exportGraphData(chainId, g.nodes, g.rels, pluginConfig!);
+              break;
+            }
+          }
+        }
+      } catch (err: any) {
+        log("error", "llm_output processing failed", { error: String(err) });
+      }
     });
 
-    // --- agent_end: final message + run status ---
-    api.on("agent_end", (event: any) => {
+    // ---- agent_end: 建图（不含 Outcome），导出清理后的 messages ----
+    api.on("agent_end", async (event: any) => {
       rememberLatestQuestionForEvent(event);
       const rawMessages = event?.messages ?? event?.event?.messages;
       const { messages: cleanedMessages, questionTimestamp } =
@@ -227,20 +507,43 @@ export default definePluginEntry({
           : undefined,
         messages: cleanedMessages,
       });
+
+      if (!processor || !pluginConfig) return;
+
+      try {
+        const agentEndEvent = {
+          time: Date.now(),
+          data: {
+            runId: event?.runId,
+            taskId: event?.taskId,
+            success: event?.success,
+            messages: cleanedMessages,
+          },
+        };
+
+        await processor.onAgentEnd(agentEndEvent);
+
+        const storage: any = (processor as any).storage;
+        const chainsMap: Map<string, EventChain> = storage.chains;
+        for (const chain of chainsMap.values()) {
+          const matchTaskId = event?.runId ?? event?.taskId;
+          if (chain.taskId === matchTaskId) {
+            exportEventChainData(chain, pluginConfig!);
+            break;
+          }
+        }
+
+        log("graph_build", "agent_end graph built", {
+          taskId: event?.taskId,
+          runId: event?.runId,
+        });
+      } catch (err: any) {
+        log("error", "agent_end graph build failed", { error: String(err) });
+      }
     });
 
-    // // --- before agent: final message + run status ---
-    // api.on("before_agent_reply", (event: any) => {
-    //   log("before_agent_reply", "before_agent_reply", {
-    //     event,
-    //   });
-    // });
-
     api.on("llm_input", (event: any) => {
-      log("llm_input", "llm_input", {
-        event,
-      });
+      log("llm_input", "llm_input", { event });
     });
   },
 });
-

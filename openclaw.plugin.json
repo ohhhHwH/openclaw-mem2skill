@@ -9,6 +9,28 @@
       "logPath": {
         "type": "string",
         "description": "日志文件路径"
+      },
+      "graphLogPath": {
+        "type": "string",
+        "description": "图谱 JSONL 日志文件路径"
+      },
+      "graphDataDir": {
+        "type": "string",
+        "description": "图谱 JSON 数据输出目录"
+      },
+      "lanceDbPath": {
+        "type": "string",
+        "description": "LanceDB 向量数据库路径"
+      },
+      "scoreThreshold": {
+        "type": "number",
+        "default": 0.8,
+        "description": "检索相似度阈值，低于此值的历史事件链不输出"
+      },
+      "embeddingDim": {
+        "type": "number",
+        "default": 64,
+        "description": "嵌入向量维度"
       }
     }
   }

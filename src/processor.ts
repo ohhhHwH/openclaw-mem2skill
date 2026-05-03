@@ -10,7 +10,7 @@ import type {
 } from "./types";
 export type { GraphNode };
 
-function simpleEmbedding(text: string, dim: number = 64): number[] {
+export function simpleEmbedding(text: string, dim: number = 64): number[] {
   const vec = new Array(dim).fill(0);
   for (let i = 0; i < text.length; i++) {
     vec[i % dim] += text.charCodeAt(i);
