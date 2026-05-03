@@ -147,35 +147,35 @@ export default definePluginEntry({
       });
     });
 
-    api.on("before_tool_call", (event: any) => {
-      log(
-        "tool_call",
-        `before_tool_call: ${event?.name ?? event?.toolName ?? "?"}`,
-        {
-          toolName: event?.name ?? event?.toolName,
-          parameters: safeStr(
-            event?.parameters ?? event?.params ?? event?.input
-          ),
-          taskId: event?.taskId,
-          event,
-        }
-      );
-    });
+    // api.on("before_tool_call", (event: any) => {
+    //   log(
+    //     "tool_call",
+    //     `before_tool_call: ${event?.name ?? event?.toolName ?? "?"}`,
+    //     {
+    //       toolName: event?.name ?? event?.toolName,
+    //       parameters: safeStr(
+    //         event?.parameters ?? event?.params ?? event?.input
+    //       ),
+    //       taskId: event?.taskId,
+    //       event,
+    //     }
+    //   );
+    // });
 
-    api.on("after_tool_call", (event: any) => {
-      log(
-        "tool_result",
-        `after_tool_call: ${event?.name ?? event?.toolName ?? "?"}`,
-        {
-          toolName: event?.name ?? event?.toolName,
-          result: safeStr(event?.result),
-          success: event?.success,
-          duration: event?.duration,
-          taskId: event?.taskId,
-          event,
-        }
-      );
-    });
+    // api.on("after_tool_call", (event: any) => {
+    //   log(
+    //     "tool_result",
+    //     `after_tool_call: ${event?.name ?? event?.toolName ?? "?"}`,
+    //     {
+    //       toolName: event?.name ?? event?.toolName,
+    //       result: safeStr(event?.result),
+    //       success: event?.success,
+    //       duration: event?.duration,
+    //       taskId: event?.taskId,
+    //       event,
+    //     }
+    //   );
+    // });
 
     api.on("reply_dispatch", (event: any) => {
       rememberLatestQuestionForEvent(event);
@@ -229,12 +229,12 @@ export default definePluginEntry({
       });
     });
 
-    // --- before agent: final message + run status ---
-    api.on("before_agent_reply", (event: any) => {
-      log("before_agent_reply", "before_agent_reply", {
-        event,
-      });
-    });
+    // // --- before agent: final message + run status ---
+    // api.on("before_agent_reply", (event: any) => {
+    //   log("before_agent_reply", "before_agent_reply", {
+    //     event,
+    //   });
+    // });
 
     api.on("llm_input", (event: any) => {
       log("llm_input", "llm_input", {
