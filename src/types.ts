@@ -31,7 +31,7 @@ export interface GraphNode {
   properties: Record<string, any>;
 }
 
-export type GraphRelType = "TRIGGERS" | "REQUIRES" | "LEADS_TO" | "RESULTS_IN";
+export type GraphRelType = "TRIGGERS" | "REQUIRES" | "LEADS_TO" | "RESULTS_IN" | "DEPENDS_ON";
 
 export interface GraphRelationship {
   from: string[];

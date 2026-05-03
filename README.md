@@ -63,7 +63,7 @@ openclaw plugins uninstall memory2skill
 
 返回值: 字符串 (包含历史经验的 Prompt)
 
-#### 图谱建立
+#### 图谱建立/存储
 事件 "reply_dispatch" 触发 (agent_plan), 新建图:
 
 输入:
@@ -80,19 +80,116 @@ openclaw plugins uninstall memory2skill
 
 -----
 
-事件 "before_tool_call" / "after_tool_call" 触发, 记录工具调用:
+事件 "agent_end" 触发, 记录工具调用:
 
-输入:
+输入: 见 example.log
 ```LOG
-{"time":"2026-04-28T12:43:49.510Z","category":"tool_call","message":"before_tool_call: feishu_search_doc_wiki","data":{"toolName":"feishu_search_doc_wiki","parameters":"{\"action\":\"search\",\"query\":\"每日一题\"}"}}
-{"time":"2026-04-28T12:43:50.180Z","category":"tool_result","message":"after_tool_call: feishu_search_doc_wiki","data":{"toolName":"feishu_search_doc_wiki","result":"{\"content\":[{\"type\":\"text\",\"text\":\"{\\n  \\\"error\\\": \\\"need_user_authorization\\\"\\n}\"}],\"details\":{\"error\":\"need_user_authorization\"}}"}}
-
-TODO : 日志中如何区分是哪个agent_plan的工具调用？如果有同步的tool call如何区分
+{
+    "time": "2026-05-02T15:39:50.764Z",
+    "category": "agent_end",
+    "message": "agent_end",
+    "data": {
+        ...
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": <Query>,
+                    }
+                ],
+                ...
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": <think content>,
+                        "thinkingSignature": "reasoning_content"
+                    },
+                    {
+                        "type": "toolCall",
+                        "id": <toolCall id 1>,
+                        "name": <toolCall name 1>,
+                        "arguments": {
+                            "query": <toolCall query content>
+                        }
+                    }
+                ],
+                ...
+            },
+            {
+                "role": "toolResult",
+                "toolCallId": <toolCall id 1>,
+                "toolName": <toolCall name 1>,
+                "content": [
+                    {
+                        "type": "text",
+                        "text": <toolCall result content>
+                    }
+                ],
+                "details": {
+                    "query": <toolCall query details content>,
+                    "provider": "miaoda",
+                    "count": 10,
+                    "results": [
+                        {
+                            "title": <toolCall result details title 1>,
+                            "url": <toolCall result details url 1>,
+                            "description": <toolCall result details description 1>,
+                            "siteName": <toolCall result details siteName 1>
+                        },
+                        ...
+                    ]
+                },
+                "isError": false,
+                "timestamp": 1777736291310
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": <base on toolcall result and query , think next step>
+                    },
+                    {
+                        "type": "toolCall",
+                        "id": <toolCall id 2>,
+                        "name": "web_crawl",
+                        "arguments": {
+                            "url": <toolCall query content 2> may from pre tool call result,
+                        }
+                    }
+                ],
+                ...
+            },
+            ...
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": <before pre memory, include tool call result, thinks, and query>
+                    },
+                    {
+                        "type": "text",
+                        "text": <final answer content>
+                    }
+                ],
+                ...
+            }
+        ]
+    }
+}
 ```
 
+
 流程
-1. before: 追加 tool_call 事件 (工具名, 参数), 更新 toolSequence
-2. after: 追加 tool_call 事件 (工具名, 参数), 更新 toolSequence，链接在上一个 before_tool_call 事件后
+1. 根据 tool call 与 tool result 的关系通过 tool call id 来关联，将其视为一个节点
+2. 如果 tool call 查询的字符串 在之前的 tool_result 中能够找到（字符串匹配），那么认为是依赖关系，建立图谱边
+3. 设置事件链 outcome (success/failure/partial) - 通过 llm对thinking内容分析 进行打分
 
 输出: 局事件链对象 (EventChain) 新增 tool_call 事件
 
@@ -100,7 +197,7 @@ TODO : 日志中如何区分是哪个agent_plan的工具调用？如果有同步
 
 -----
 
-事件 "llm_output" 触发, 将创建的图保存链接到问题上:
+事件 "llm_output" 触发, 将 最终回答 和 创建的图保存链接到问题上:
 
 输入:
 ```LOG
@@ -109,8 +206,8 @@ TODO : 日志中如何区分是哪个agent_plan的工具调用？如果有同步
 ```
 
 流程：
-1. 设置事件链 outcome (success/failure/partial) - 暂定用户下一次的query中包含对上一次回答的评价/打分 OR LLM打分
-2. 生成整体向量 (userIntent + toolSequence + outcome) - ？必要性
+1. 设置事件链 outcome (success/failure/partial) - LLM打分
+2. 生成问题向量（摘要）
 3. 保存*事件链摘要*到 LanceDB (向量检索)
 4. 构建知识图谱节点 (Intent → Action → Outcome) 和关系 (TRIGGERS, LEADS_TO, RESULTS_IN)
 5. 保存图谱到 本地log知识图谱文件

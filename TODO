@@ -29,19 +29,23 @@
         # TODO 图中因果关系并非线性的,成图状，to有多个,from有多个 -> 如问题to多个toolcall，最终问题的回答from多个tool call的结果
             # TODO 判断工具调用间的依赖关系 - 找到 Tool call 是由谁规划的
                 #agent_end message 中事件链记录数据过多，包括历史规划，减去晚于问题输入的message - 剩下的就是规划
-                # TODO 直接用 agent_end 清理过后的 message 建图
+                # TODO 直接用 agent_end 清理过后的 message 建图，因为这里面包含了足够的信息，且放在回复完后操作，节省时间
                 #找到一个 openclaw需要上一个tool call生成的结果才能进行下一个tool call的问题 - 找leetcode每日一题最后的那个网址的获取跟前文相关
-                    # TODO 前文如何来的？如何建立 因果 关系？-用LLM？ - v1.7 log中缺少agent_end message 信息暂时无法溯源 - 用/new
+                    # 前文如何来的？如何建立 因果 关系？-用LLM？ - v1.7 log中缺少agent_end message 信息暂时无法溯源 - 用/new
+                        # 该链接从前文中的 tool call 后的 tool_result 中来
+                        # TODO 当前认为如果查询的字符串 在之前的 tool_result 中能够找到（字符串匹配），那么认为是依赖关系 - 暂定
                 # TODO 将 think + prompt 投入 LLM 给出 依赖关系 和 上次 func call 评价！对上次 funcall 打分
         # TODO 图对齐 - 暂定 prompt
         # TODO 图中 label( query ) -> "label":"今天leetcode每日一题是什么" -> 转成离散标准化的label
             # TODO 语义标准化拆解 - 暂定 prompt - 给问题打标签 拆解 - 类似与 kimi
             # TODO Query 相似度
     # TODO 最终回答 + query -> LLM 给出一个分数
+    # TODO message_received 将原始信息给变了
+    # TODO log 中 保留事件触发 message_received agent_end；日志保留  reply_dispatch llm_input；其他 删去(暂定-成功规划中用不到)
     # TODO test
         # test中 保存事件链为相同问题
         # TODO test没有进行 历史事件链检索 的测试，以及历史事件链的向量表和对应原始文本
-
+    
 # Low Priority
     # TODO 创建CONFIG文件，包含日志路径，图谱数据路径等
     # TODO storage.ts PATH 路径指定

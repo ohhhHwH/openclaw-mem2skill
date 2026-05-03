@@ -197,7 +197,6 @@ export class Processor {
   }
 
   async onAgentEnd(event: any): Promise<void> {
-    // agent_end 自身不带 runId 时，回退到当前会话的 currentRunId
     const taskId =
       event?.data?.runId ?? event?.data?.taskId ?? this.currentRunId;
 
@@ -213,12 +212,42 @@ export class Processor {
     chain.outcome =
       event?.data?.success === false ? "failure" : "success";
 
+    // --- 从 agent_end 的 messages 数组中提取 tool call 节点 ---
+    const messages: any[] = event?.data?.messages ?? [];
+    const toolNodes = this.extractToolNodes(messages);
+
+    // 仅当 messages 中有 tool call 时才覆盖链上已有的 toolSequence/events
+    if (toolNodes.length > 0) {
+      chain.toolSequence = toolNodes.map((t) => t.toolName);
+      chain.events = [
+        {
+          type: "user_query",
+          content: chain.userIntent,
+          metadata: { timestamp: chain.timestamp },
+        },
+      ];
+      for (const tn of toolNodes) {
+        chain.events.push({
+          type: "tool_call",
+          content: `${tn.toolName}: ${tn.toolCallId}`,
+          metadata: {
+            toolName: tn.toolName,
+            parameters: tn.arguments,
+            result: tn.resultText,
+            success: !tn.isError,
+            timestamp: tn.timestamp ?? chain.timestamp,
+          },
+        });
+      }
+    }
+
     chain.embedding = simpleEmbedding(
       chain.userIntent + " " + chain.toolSequence.join(" ")
     );
 
     await this.storage.saveEventChain(chain);
 
+    // --- 构建知识图谱 ---
     const nodes: GraphNode[] = [];
     const rels: GraphRelationship[] = [];
 
@@ -231,32 +260,55 @@ export class Processor {
     nodes.push(intentNode);
 
     const actionNodes: GraphNode[] = [];
-    for (const toolName of chain.toolSequence) {
-      const actionNode: GraphNode = {
-        id: `action-${chain.id}-${toolName}-${nodes.length}`,
-        type: "Action",
-        label: toolName,
-        properties: {},
-      };
-      nodes.push(actionNode);
-      actionNodes.push(actionNode);
+    if (toolNodes.length > 0) {
+      // 新路径：从 messages 中提取的 tool call 节点建图
+      for (const tn of toolNodes) {
+        const actionNode: GraphNode = {
+          id: `action-${chain.id}-${tn.toolCallId}`,
+          type: "Action",
+          label: tn.toolName,
+          properties: {
+            toolCallId: tn.toolCallId,
+            arguments: tn.arguments,
+            isError: tn.isError,
+          },
+        };
+        nodes.push(actionNode);
+        actionNodes.push(actionNode);
+      }
+    } else {
+      // 回退路径：从 before_tool_call/after_tool_call 积累的 toolSequence 建图
+      for (const toolName of chain.toolSequence) {
+        const actionNode: GraphNode = {
+          id: `action-${chain.id}-${toolName}-${nodes.length}`,
+          type: "Action",
+          label: toolName,
+          properties: {},
+        };
+        nodes.push(actionNode);
+        actionNodes.push(actionNode);
+      }
     }
 
     if (actionNodes.length > 0) {
-      // Intent -> all Actions (one-to-many TRIGGERS)
       rels.push({
         from: [intentNode.id],
         to: actionNodes.map((n) => n.id),
         type: "TRIGGERS",
       });
 
-      // Sequential LEADS_TO between adjacent actions
       for (let i = 0; i < actionNodes.length - 1; i++) {
         rels.push({
           from: [actionNodes[i].id],
           to: [actionNodes[i + 1].id],
           type: "LEADS_TO",
         });
+      }
+
+      // 依赖检测：仅在从 messages 提取了 toolNodes 时执行
+      if (toolNodes.length > 0) {
+        const dependsRels = this.detectDependencies(toolNodes, actionNodes);
+        rels.push(...dependsRels);
       }
     }
 
@@ -268,7 +320,6 @@ export class Processor {
     };
     nodes.push(outcomeNode);
 
-    // All Actions -> Outcome (many-to-one RESULTS_IN)
     const resultFromIds =
       actionNodes.length > 0
         ? actionNodes.map((n) => n.id)
@@ -286,20 +337,144 @@ export class Processor {
     }
   }
 
+  private extractToolNodes(messages: any[]): ToolNode[] {
+    const toolCalls = new Map<string, { name: string; arguments: any }>();
+    const toolResults = new Map<
+      string,
+      { text: string; details: any; isError: boolean; timestamp?: number }
+    >();
+
+    for (const msg of messages) {
+      if (msg?.role === "assistant" && Array.isArray(msg?.content)) {
+        for (const block of msg.content) {
+          if (block?.type === "toolCall" && block.id) {
+            toolCalls.set(block.id, {
+              name: block.name ?? "unknown",
+              arguments: block.arguments,
+            });
+          }
+        }
+      }
+      if (msg?.role === "toolResult" && msg?.toolCallId) {
+        const textParts: string[] = [];
+        if (Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block?.type === "text" && block.text) {
+              textParts.push(block.text);
+            }
+          }
+        }
+        toolResults.set(msg.toolCallId, {
+          text: textParts.join("\n"),
+          details: msg.details,
+          isError: msg.isError === true,
+          timestamp: msg.timestamp,
+        });
+      }
+    }
+
+    const nodes: ToolNode[] = [];
+    for (const [callId, call] of toolCalls) {
+      const result = toolResults.get(callId);
+      nodes.push({
+        toolCallId: callId,
+        toolName: call.name,
+        arguments: call.arguments,
+        resultText: result?.text ?? "",
+        resultDetails: result?.details,
+        isError: result?.isError ?? false,
+        timestamp: result?.timestamp,
+      });
+    }
+    return nodes;
+  }
+
+  private detectDependencies(
+    toolNodes: ToolNode[],
+    actionNodes: GraphNode[]
+  ): GraphRelationship[] {
+    const rels: GraphRelationship[] = [];
+
+    for (let i = 1; i < toolNodes.length; i++) {
+      const current = toolNodes[i];
+      const argValues = this.extractStringValues(current.arguments);
+      if (argValues.length === 0) continue;
+
+      for (let j = 0; j < i; j++) {
+        const prior = toolNodes[j];
+        const priorText = this.getToolResultFullText(prior);
+        if (!priorText) continue;
+
+        const hasDep = argValues.some(
+          (val) => val.length >= 4 && priorText.includes(val)
+        );
+        if (hasDep) {
+          rels.push({
+            from: [actionNodes[j].id],
+            to: [actionNodes[i].id],
+            type: "DEPENDS_ON",
+          });
+        }
+      }
+    }
+    return rels;
+  }
+
+  private extractStringValues(obj: any): string[] {
+    const values: string[] = [];
+    if (!obj) return values;
+    if (typeof obj === "string") {
+      values.push(obj);
+      return values;
+    }
+    if (typeof obj === "object") {
+      for (const val of Object.values(obj)) {
+        if (typeof val === "string" && val.length > 0) {
+          values.push(val);
+        }
+      }
+    }
+    return values;
+  }
+
+  private getToolResultFullText(node: ToolNode): string {
+    const parts: string[] = [];
+    if (node.resultText) parts.push(node.resultText);
+    if (node.resultDetails) {
+      try {
+        parts.push(
+          typeof node.resultDetails === "string"
+            ? node.resultDetails
+            : JSON.stringify(node.resultDetails)
+        );
+      } catch {
+        // skip
+      }
+    }
+    return parts.join("\n");
+  }
+
   private findChainForToolEvent(event: any): EventChain | undefined {
-    // 1. 事件自带 taskId 直接命中
     const taskId = event?.data?.taskId;
     if (taskId && this.activeChains.has(taskId)) {
       return this.activeChains.get(taskId);
     }
-    // 2. 退而使用最近一次 reply_dispatch 绑定的 runId 对应的链
     if (this.currentRunId && this.activeChains.has(this.currentRunId)) {
       return this.activeChains.get(this.currentRunId);
     }
-    // 3. 仍未命中时，取唯一活跃链作兜底
     if (this.activeChains.size === 1) {
       return this.activeChains.values().next().value;
     }
     return this.activeChains.values().next().value;
   }
+}
+
+interface ToolNode {
+  toolCallId: string;
+  toolName: string;
+  arguments: any;
+  resultText: string;
+  resultDetails: any;
+  isError: boolean;
+  timestamp?: number;
 }

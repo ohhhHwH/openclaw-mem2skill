@@ -328,7 +328,7 @@ describe("simulate: replay v1.7.log via Processor", () => {
 
       // 关系类型应限定在 Processor 实际产出的几种之内
       for (const r of g.rels) {
-        expect(["TRIGGERS", "LEADS_TO", "RESULTS_IN"]).toContain(r.type);
+        expect(["TRIGGERS", "LEADS_TO", "RESULTS_IN", "DEPENDS_ON"]).toContain(r.type);
       }
 
       // Intent 是图的起点，TRIGGERS 关系的 from 包含 Intent
@@ -485,5 +485,146 @@ describe("simulate: replay v1.7.log via Processor", () => {
     // 清理 probe，避免影响后续 afterAll
     (processor as any).activeChains.delete("probe-stock");
     (processor as any).pendingTaskId = null;
+  });
+});
+
+// ===== 第二组测试：example.log — 从 agent_end messages 建图 =====
+
+function parsePrettyPrintedLog(raw: string): any[] {
+  const objects: any[] = [];
+  let depth = 0, start = -1, inString = false, esc = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (esc) { esc = false; continue; }
+    if (ch === "\\" && inString) { esc = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") { if (depth === 0) start = i; depth++; }
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        objects.push(JSON.parse(raw.slice(start, i + 1)));
+        start = -1;
+      }
+    }
+  }
+  return objects;
+}
+
+describe("simulate: replay example.log (message-based graph)", () => {
+  let processor: Processor;
+  const collectedChains: EventChain[] = [];
+  const collectedGraphs: Array<{
+    chainId: string;
+    nodes: GraphNode[];
+    rels: GraphRelationship[];
+  }> = [];
+
+  const EXAMPLE_OUTPUT_DIR = path.resolve(CURRENT_DIR, "output", "example");
+  const EXAMPLE_GRAPH_LOG = path.join(EXAMPLE_OUTPUT_DIR, "graph.jsonl");
+
+  beforeAll(async () => {
+    if (fs.existsSync(EXAMPLE_OUTPUT_DIR)) {
+      fs.rmSync(EXAMPLE_OUTPUT_DIR, { recursive: true, force: true });
+    }
+    fs.mkdirSync(EXAMPLE_OUTPUT_DIR, { recursive: true });
+
+    processor = new Processor({
+      lanceDbPath: path.join(EXAMPLE_OUTPUT_DIR, "lance.db"),
+      graphLogPath: EXAMPLE_GRAPH_LOG,
+    });
+    await processor.init();
+
+    const raw = fs.readFileSync(
+      path.resolve(CURRENT_DIR, "example.log"),
+      "utf-8"
+    );
+    const events = parsePrettyPrintedLog(raw);
+    for (const event of events) {
+      await dispatchLogEvent(processor, event);
+    }
+
+    for (const chain of readChainsFromProcessor(processor).values()) {
+      collectedChains.push(chain);
+    }
+    for (const [chainId, g] of readGraphsFromProcessor(processor).entries()) {
+      collectedGraphs.push({ chainId, nodes: g.nodes, rels: g.rels });
+    }
+
+    fs.writeFileSync(
+      path.join(EXAMPLE_OUTPUT_DIR, "event_chains.json"),
+      JSON.stringify(collectedChains, null, 2),
+      "utf-8"
+    );
+    fs.writeFileSync(
+      path.join(EXAMPLE_OUTPUT_DIR, "graph_data.json"),
+      JSON.stringify(collectedGraphs, null, 2),
+      "utf-8"
+    );
+  });
+
+  afterAll(async () => {
+    await processor.close();
+  });
+
+  it("应从 agent_end messages 中提取出 11 个 tool call 节点", () => {
+    expect(collectedChains.length).toBe(1);
+    const chain = collectedChains[0];
+    expect(chain.toolSequence).toEqual([
+      "web_search", "web_crawl", "web_crawl", "web_search",
+      "web_crawl", "web_search", "web_search", "web_crawl",
+      "web_crawl", "web_search", "web_crawl",
+    ]);
+    expect(chain.outcome).toBe("success");
+  });
+
+  it("tool call 与 tool result 应通过 toolCallId 正确关联", () => {
+    const chain = collectedChains[0];
+    const toolEvents = chain.events.filter((e) => e.type === "tool_call");
+    expect(toolEvents.length).toBe(11);
+    for (const ev of toolEvents) {
+      expect(ev.metadata.toolName).toBeTruthy();
+      expect(ev.metadata.result).toBeDefined();
+    }
+  });
+
+  it("图谱应包含 Intent → Action* → Outcome 结构", () => {
+    expect(collectedGraphs.length).toBe(1);
+    const g = collectedGraphs[0];
+
+    const intents = g.nodes.filter((n) => n.type === "Intent");
+    const actions = g.nodes.filter((n) => n.type === "Action");
+    const outcomes = g.nodes.filter((n) => n.type === "Outcome");
+    expect(intents.length).toBe(1);
+    expect(actions.length).toBe(11);
+    expect(outcomes.length).toBe(1);
+
+    for (const r of g.rels) {
+      expect(["TRIGGERS", "LEADS_TO", "RESULTS_IN", "DEPENDS_ON"]).toContain(r.type);
+    }
+  });
+
+  it("应检测到 DEPENDS_ON 依赖关系（web_crawl URL 来自 web_search 结果）", () => {
+    const g = collectedGraphs[0];
+    const dependsRels = g.rels.filter((r) => r.type === "DEPENDS_ON");
+    expect(dependsRels.length).toBeGreaterThan(0);
+
+    // 第二个 tool call (web_crawl csdn URL) 应依赖第一个 (web_search)
+    const actions = g.nodes.filter((n) => n.type === "Action");
+    const firstActionId = actions[0].id;  // web_search
+    const secondActionId = actions[1].id; // web_crawl with csdn URL
+
+    const dep = dependsRels.find(
+      (r) => r.from.includes(firstActionId) && r.to.includes(secondActionId)
+    );
+    expect(dep).toBeDefined();
+  });
+
+  it("Action 节点应携带 toolCallId 属性", () => {
+    const g = collectedGraphs[0];
+    const actions = g.nodes.filter((n) => n.type === "Action");
+    for (const a of actions) {
+      expect(a.properties.toolCallId).toBeTruthy();
+    }
   });
 });
