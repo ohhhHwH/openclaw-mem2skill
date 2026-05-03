@@ -5,6 +5,14 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib import font_manager
 
+
+def _sanitize_text(text):
+    return "".join(
+        c for c in text
+        if ord(c) <= 0xFFFF and not (0xD800 <= ord(c) <= 0xDFFF) and c != "�"
+    )
+
+
 for _cjk in ["Microsoft YaHei", "SimHei", "STHeiti", "WenQuanYi Micro Hei"]:
     if any(_cjk in f.name for f in font_manager.fontManager.ttflist):
         plt.rcParams["font.sans-serif"] = [_cjk, "DejaVu Sans"]
@@ -28,20 +36,19 @@ EDGE_STYLES = {
 
 
 def short_label(node):
-    """Build a concise display label from node data."""
     ntype = node["type"]
     if ntype == "Intent":
-        text = node["label"]
-        return text if len(text) <= 20 else text[:18] + "…"
+        text = _sanitize_text(node["label"]).strip()
+        return text if len(text) <= 20 else text[:18] + "..."
     if ntype == "Action":
-        tool = node["label"]
+        tool = _sanitize_text(node["label"]).strip()
         args = node.get("properties", {}).get("arguments", {})
-        detail = args.get("query") or args.get("url") or ""
+        detail = _sanitize_text(args.get("query") or args.get("url") or "").strip()
         if len(detail) > 28:
-            detail = detail[:26] + "…"
+            detail = detail[:26] + "..."
         return f"{tool}\n{detail}" if detail else tool
     if ntype == "Outcome":
-        return node["label"]
+        return _sanitize_text(node["label"]).strip()
     return node["id"][:12]
 
 
@@ -63,12 +70,10 @@ def build_graph(chains):
 
 
 def layout_graph(G):
-    """Arrange nodes in layers: Intent left, Actions middle (top-to-bottom), Outcome right."""
     intents = [n for n, d in G.nodes(data=True) if d["type"] == "Intent"]
     actions = [n for n, d in G.nodes(data=True) if d["type"] == "Action"]
     outcomes = [n for n, d in G.nodes(data=True) if d["type"] == "Outcome"]
 
-    # order actions by topological sort of DEPENDS_ON edges, fallback to insertion order
     dep_graph = nx.DiGraph()
     dep_graph.add_nodes_from(actions)
     for u, v, d in G.edges(data=True):
@@ -122,7 +127,6 @@ def draw(G, pos):
             min_source_margin=28, min_target_margin=28,
         )
 
-    # draw weight labels on edges that have them
     edge_labels = {}
     for u, v, d in G.edges(data=True):
         w = d.get("weight")
