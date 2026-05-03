@@ -261,24 +261,24 @@ describe("simulate: replay v1.7.log via Processor", () => {
 
   // ===== 断言：事件链构建 =====
   it("应基于日志中的两个会话构建出两条 runId 与 userIntent 正确配对的事件链", () => {
-    expect(collectedChains.length).toBe(2);
+    expect(collectedChains.length).toBe(4);
 
     // 找到日志里两个会话各自的事件链
-    const stockChain = collectedChains.find(
-      (c) => c.taskId === "76fb1627-5283-4dcc-8433-33181ba33a25"
+    const goldChain = collectedChains.find(
+      (c) => c.taskId === "7502aab6-d251-4abe-b1e1-72f605e34d7b"
     );
-    const leetcodeChain = collectedChains.find(
-      (c) => c.taskId === "481aa500-3213-49ed-841e-f42d64af6f7b"
+    const nasdaqChain = collectedChains.find(
+      (c) => c.taskId === "8540650e-ce08-4b5f-ad43-67a8a61e43ba"
     );
-    expect(stockChain).toBeDefined();
-    expect(leetcodeChain).toBeDefined();
+    expect(goldChain).toBeDefined();
+    expect(nasdaqChain).toBeDefined();
 
     // userIntent 必须与各自 runId 对应的真实问题匹配
-    expect(stockChain!.userIntent).toBe("给出今天美股涨的最高的股票");
-    expect(leetcodeChain!.userIntent).toBe("今天leetcode每日一题是什么");
+    expect(goldChain!.userIntent).toBe("告诉我今天英国交易所黄金期货的行情");
+    expect(nasdaqChain!.userIntent).toBe("告诉我今天美股纳斯达克的指数怎么样，涨幅最高的股票是哪一只");
 
     // 每条链字段完整、向量长度正确
-    for (const c of [stockChain!, leetcodeChain!]) {
+    for (const c of [goldChain!, nasdaqChain!]) {
       expect(c.id).toBeTruthy();
       expect(Array.isArray(c.events)).toBe(true);
       expect(Array.isArray(c.toolSequence)).toBe(true);
@@ -287,28 +287,27 @@ describe("simulate: replay v1.7.log via Processor", () => {
   });
 
   it("两条事件链的工具序列应分别还原各自会话的调用顺序", () => {
-    const stockChain = collectedChains.find(
-      (c) => c.taskId === "76fb1627-5283-4dcc-8433-33181ba33a25"
+    const goldChain = collectedChains.find(
+      (c) => c.taskId === "7502aab6-d251-4abe-b1e1-72f605e34d7b"
     )!;
-    const leetcodeChain = collectedChains.find(
-      (c) => c.taskId === "481aa500-3213-49ed-841e-f42d64af6f7b"
+    const nasdaqChain = collectedChains.find(
+      (c) => c.taskId === "8540650e-ce08-4b5f-ad43-67a8a61e43ba"
     )!;
 
-    // 美股会话：日志依次出现 exec, exec, web_crawl
-    expect(stockChain.toolSequence).toEqual(["exec", "exec", "web_crawl"]);
-    expect(stockChain.outcome).toBe("success");
+    // 黄金期货会话：agent_end messages 中包含 1 次 web_search
+    expect(goldChain.toolSequence).toEqual(["web_search"]);
+    expect(goldChain.outcome).toBe("success");
 
-    // LeetCode 会话：依次出现 exec, web_crawl, exec, web_crawl
-    expect(leetcodeChain.toolSequence).toEqual([
-      "exec",
-      "web_crawl",
-      "exec",
-      "web_crawl",
+    // 美股纳斯达克会话：agent_end messages 中包含 3 次 web_search
+    expect(nasdaqChain.toolSequence).toEqual([
+      "web_search",
+      "web_search",
+      "web_search",
     ]);
-    expect(leetcodeChain.outcome).toBe("success");
+    expect(nasdaqChain.outcome).toBe("success");
 
     // 工具调用 metadata 都应被 after_tool_call 回填
-    for (const chain of [stockChain, leetcodeChain]) {
+    for (const chain of [goldChain, nasdaqChain]) {
       const toolEvents = chain.events.filter((e) => e.type === "tool_call");
       expect(toolEvents.length).toBe(chain.toolSequence.length);
       for (const ev of toolEvents) {
@@ -439,55 +438,55 @@ describe("simulate: replay v1.7.log via Processor", () => {
     const storage: any = (processor as any).storage;
 
     // 构造与历史链同源的查询向量：用 userIntent + toolSequence，与 onAgentEnd 中保持一致
-    const stockChain = collectedChains.find(
-      (c) => c.taskId === "76fb1627-5283-4dcc-8433-33181ba33a25"
+    const goldChain = collectedChains.find(
+      (c) => c.taskId === "7502aab6-d251-4abe-b1e1-72f605e34d7b"
     )!;
-    const leetcodeChain = collectedChains.find(
-      (c) => c.taskId === "481aa500-3213-49ed-841e-f42d64af6f7b"
+    const nasdaqChain = collectedChains.find(
+      (c) => c.taskId === "8540650e-ce08-4b5f-ad43-67a8a61e43ba"
     )!;
 
-    // 1. 用美股相关查询应优先命中美股链
+    // 1. 用黄金期货相关查询应优先命中黄金链
     //    simpleEmbedding 是字符频率哈希，查询文本需与目标 userIntent 字符分布接近
-    const stockQueryVec = simpleEmbedding(
-      "今天美股涨的最多的股票是哪只 exec web_crawl"
+    const goldQueryVec = simpleEmbedding(
+      "今天英国交易所黄金期货的行情 web_search"
     );
-    const stockHits = await storage.searchSimilar(stockQueryVec, 5);
-    expect(stockHits.length).toBeGreaterThan(0);
-    expect(stockHits[0].chain.id).toBe(stockChain.id);
+    const goldHits = await storage.searchSimilar(goldQueryVec, 5);
+    expect(goldHits.length).toBeGreaterThan(0);
+    expect(goldHits[0].chain.id).toBe(goldChain.id);
     // 相似度应为合法分数
-    for (const h of stockHits) {
+    for (const h of goldHits) {
       expect(typeof h.score).toBe("number");
       expect(h.score).toBeGreaterThanOrEqual(-1);
       expect(h.score).toBeLessThanOrEqual(1);
     }
 
-    // 2. 用 LeetCode 相关查询应优先命中 LeetCode 链
-    const leetcodeQueryVec = simpleEmbedding(
-      "今天leetcode每日一题的题目 exec web_crawl"
+    // 2. 用美股纳斯达克相关查询应优先命中纳斯达克链
+    const nasdaqQueryVec = simpleEmbedding(
+      "告诉我今天美股纳斯达克的指数怎么样涨幅最高的股票是哪一只 web_search web_search web_search"
     );
-    const leetcodeHits = await storage.searchSimilar(leetcodeQueryVec, 5);
-    expect(leetcodeHits.length).toBeGreaterThan(0);
-    expect(leetcodeHits[0].chain.id).toBe(leetcodeChain.id);
+    const nasdaqHits = await storage.searchSimilar(nasdaqQueryVec, 5);
+    expect(nasdaqHits.length).toBeGreaterThan(0);
+    expect(nasdaqHits[0].chain.id).toBe(nasdaqChain.id);
 
     // 3. topK 截断生效
-    const topOne = await storage.searchSimilar(stockQueryVec, 1);
+    const topOne = await storage.searchSimilar(goldQueryVec, 1);
     expect(topOne.length).toBe(1);
 
     // 4. 走 Processor.onMessageReceived 也应能在保存的历史里检索到自身或同类
     //    新建链会污染 activeChains，测试结束后清理
     const retrieval = await processor.onMessageReceived({
       time: Date.now(),
-      data: { original: "今天美股表现最好的股票", taskId: "probe-stock" },
+      data: { original: "今天黄金期货行情怎么样", taskId: "probe-gold" },
     });
     expect(Array.isArray(retrieval)).toBe(true);
     expect(retrieval.length).toBeGreaterThan(0);
-    // 排在最前的应该是历史里两条链之一（最相似的命中是 stockChain 但不强约束顺序）
+    // 排在最前的应该是历史里两条链之一（最相似的命中是 goldChain 但不强约束顺序）
     const top = retrieval[0];
     const histIds = collectedChains.map((c) => c.id);
     expect(histIds).toContain(top.chain.id);
 
     // 清理 probe，避免影响后续 afterAll
-    (processor as any).activeChains.delete("probe-stock");
+    (processor as any).activeChains.delete("probe-gold");
     (processor as any).pendingTaskId = null;
   });
 });
