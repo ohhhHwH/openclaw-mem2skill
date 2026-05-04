@@ -278,15 +278,22 @@ async function evaluateViaRuntime(
     const sessionId = `llm-eval-${Date.now()}`;
     const agentId = ctx?.agentId ?? "default";
     const config = api?.config ?? {};
+    const workspaceDir =
+      ctx?.workspaceDir ?? config?.workspaceDir ?? process.cwd();
+    let agentDir: string | undefined;
+    try {
+      agentDir = api?.runtime?.agent?.resolveAgentDir?.(config, agentId);
+    } catch {}
+    if (!agentDir) agentDir = workspaceDir;
 
     const result = await runAgent({
       sessionId,
-      sessionKey: ctx?.sessionKey,
+      sessionKey: ctx?.sessionKey ?? "llm-eval",
       agentId,
       messageProvider: ctx?.messageProvider,
       messageChannel: ctx?.channelId,
-      workspaceDir: ctx?.workspaceDir,
-      agentDir: api?.runtime?.agent?.resolveAgentDir?.(config, agentId),
+      workspaceDir,
+      agentDir,
       config,
       prompt,
       provider: ctx?.modelProviderId ?? lastLlmProvider,
