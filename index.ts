@@ -12,7 +12,7 @@ import type {
   RetrievalResult,
 } from "./src/types";
 
-const PLUGIN_VERSION = "1.17";
+const PLUGIN_VERSION = "1.17.1";
 const DEFAULT_PREFIX = "hello openclaw,";
 const questionTimestampByKey = new Map<string, number>();
 let latestQuestionTimestamp: number | null = null;
@@ -242,11 +242,94 @@ function buildRetrievalPrompt(
     sections.push("");
   }
 
-  // return sections.join("\n");
-  return "";
+  return sections.join("\n");
 }
 
-// ---- LLM 评估：通过 llm-task 插件对用户问题和最终回答进行评分 ----
+// ---- LLM 评估：对用户问题和最终回答进行评分 ----
+
+function buildEvalPrompt(userQuestion: string, finalAnswer: string): string {
+  return (
+    `请根据以下用户输入的问题和最终回答，判断回答的准确性和相关性，并给出一个0-1之间的评分，` +
+    `0表示完全不相关或错误，1表示完全相关且正确。` +
+    `用户输入的问题是：${userQuestion}，最终回答是：${finalAnswer}。` +
+    `最终回答只给出一个评分，不需要其他解释或信息。`
+  );
+}
+
+function parseEvalScore(text: string): number | null {
+  const match = text.match(/([01](?:\.\d+)?)/);
+  if (!match) return null;
+  const score = parseFloat(match[1]);
+  if (isNaN(score) || score < 0 || score > 1) return null;
+  return score;
+}
+
+async function evaluateViaRuntime(
+  prompt: string,
+  api: any,
+): Promise<number | null> {
+  const runAgent = api?.runtime?.agent?.runEmbeddedPiAgent;
+  if (typeof runAgent !== "function") return null;
+
+  try {
+    const result = await runAgent({
+      prompt,
+      disableTools: true,
+      timeoutMs: 30000,
+    });
+
+    const text =
+      result?.text ??
+      result?.content ??
+      result?.response ??
+      result?.messages?.findLast?.((m: any) => m.role === "assistant")
+        ?.content ??
+      "";
+    return parseEvalScore(String(text));
+  } catch (err: any) {
+    log("llm_eval", "runEmbeddedPiAgent error", { error: String(err) });
+    return null;
+  }
+}
+
+async function evaluateViaFetch(
+  prompt: string,
+  config: PluginConfig,
+): Promise<number | null> {
+  if (!config.llmApiUrl || !config.llmApiKey) return null;
+
+  try {
+    const response = await fetch(config.llmApiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.llmApiKey}`,
+      },
+      body: JSON.stringify({
+        model: config.llmModel,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0,
+        max_tokens: 16,
+      }),
+    });
+
+    if (!response.ok) {
+      log("llm_eval", "LLM API request failed", {
+        status: response.status,
+        statusText: response.statusText,
+      });
+      return null;
+    }
+
+    const data = (await response.json()) as any;
+    const text: string =
+      data?.choices?.[0]?.message?.content?.trim() ?? "";
+    return parseEvalScore(text);
+  } catch (err: any) {
+    log("llm_eval", "fetch error", { error: String(err) });
+    return null;
+  }
+}
 
 async function evaluateWithLlm(
   userQuestion: string,
@@ -259,68 +342,36 @@ async function evaluateWithLlm(
     return null;
   }
 
-  const prompt =
-    `请根据以下用户输入的问题和最终回答，判断回答的准确性和相关性，并给出一个0-1之间的评分，` +
-    `0表示完全不相关或错误，1表示完全相关且正确。` +
-    `用户输入的问题是：${userQuestion}，最终回答是：${finalAnswer}。` +
-    `最终回答只给出一个评分，不需要其他解释或信息。`;
+  const prompt = buildEvalPrompt(userQuestion, finalAnswer);
 
-  const invokeToolFn =
-    api?.invokeTool ?? api?.tools?.invoke ?? api?.ctx?.invokeTool;
-  if (typeof invokeToolFn !== "function") {
-    log("llm_eval", "skipped: invokeTool not available on api", {});
-    return null;
-  }
-
-  try {
-    const toolArgs: Record<string, any> = {
-      prompt,
-      schema: {
-        type: "object",
-        properties: {
-          score: { type: "number" },
-        },
-        required: ["score"],
-        additionalProperties: false,
-      },
-      temperature: 0,
-      maxTokens: 16,
-    };
-    if (config.llmTaskProvider) toolArgs.provider = config.llmTaskProvider;
-    if (config.llmTaskModel) toolArgs.model = config.llmTaskModel;
-
-    const result = await invokeToolFn("llm-task", toolArgs);
-
-    const score =
-      result?.json?.score ??
-      result?.details?.json?.score ??
-      result?.score ??
-      (() => {
-        const text =
-          typeof result === "string"
-            ? result
-            : result?.content?.[0]?.text ?? result?.text ?? "";
-        const parsed = parseFloat(String(text));
-        return isNaN(parsed) ? null : parsed;
-      })();
-
-    if (typeof score !== "number" || isNaN(score) || score < 0 || score > 1) {
-      log("llm_eval", "failed to parse score from llm-task result", {
-        rawResult: safeStr(result),
-      });
-      return null;
-    }
-
-    log("llm_eval", "evaluation complete", {
+  // 优先使用 OpenClaw runtime 内置 LLM 调用
+  let score = await evaluateViaRuntime(prompt, api);
+  if (typeof score === "number") {
+    log("llm_eval", "evaluation complete (runtime)", {
       score,
       userQuestion: userQuestion.slice(0, 200),
       finalAnswer: finalAnswer.slice(0, 200),
     });
     return score;
-  } catch (err: any) {
-    log("llm_eval", "llm-task invocation error", { error: String(err) });
-    return null;
   }
+
+  // 回退到直接 fetch 外部 LLM API
+  score = await evaluateViaFetch(prompt, config);
+  if (typeof score === "number") {
+    log("llm_eval", "evaluation complete (fetch)", {
+      score,
+      userQuestion: userQuestion.slice(0, 200),
+      finalAnswer: finalAnswer.slice(0, 200),
+    });
+    return score;
+  }
+
+  log("llm_eval", "skipped: neither runtime nor fetch available", {
+    hasRuntime: typeof api?.runtime?.agent?.runEmbeddedPiAgent === "function",
+    hasApiUrl: !!config.llmApiUrl,
+    hasApiKey: !!config.llmApiKey,
+  });
+  return null;
 }
 
 // ---- 图谱数据导出 ----
@@ -509,6 +560,8 @@ export default definePluginEntry({
 
     // ---- before_prompt_build: 将检索到的事件链注入 agent 上下文 ----
     api.on("before_prompt_build", (_event: any) => {
+
+      return undefined;
       if (pendingRetrievalPrompt) {
         const prompt = pendingRetrievalPrompt;
         pendingRetrievalPrompt = null;
@@ -615,6 +668,7 @@ export default definePluginEntry({
             userQuestion,
             finalAnswer,
             pluginConfig!,
+            api,
           );
 
           log("llm_eval_result", "LLM evaluation score", {
