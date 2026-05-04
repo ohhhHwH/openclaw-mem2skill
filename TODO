@@ -24,7 +24,12 @@
 # TODO 图对齐 - 暂定 prompt
     # TODO openclaw 调用LLM
         ...拆解 / 相似度 / 最终回答等
+        # TODO bug 结果+ans 分数是 null - {"time":"2026-05-04T06:19:59.016Z","category":"llm_eval","message":"skipped: llmApiUrl or llmApiKey not configured","data":{}}
     # TODO 闲时线程操作 - 图对齐 - 相似事件特征提取/关节步骤提取等
+
+    # TODO BUG 没有get到历史事件链的记录 
+
+    
 
 # Mid Priority
 

@@ -22,6 +22,15 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
+function simpleEmbedding(text: string, dim: number = 64): number[] {
+  const vec = new Array(dim).fill(0);
+  for (let i = 0; i < text.length; i++) {
+    vec[i % dim] += text.charCodeAt(i);
+  }
+  const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
+  return vec.map((v) => v / norm);
+}
+
 function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -121,6 +130,28 @@ export class Storage {
           nodes: entry.nodes,
           rels: entry.rels,
         });
+
+        const intentNode = entry.nodes.find((n) => n.type === "Intent");
+        if (!intentNode) continue;
+
+        const userIntent = intentNode.label;
+        const taskId = intentNode.properties?.taskId ?? entry.chainId;
+        const actionNodes = entry.nodes.filter((n) => n.type === "Action");
+        const toolSequence = actionNodes.map((n) => n.label);
+        const outcomeNode = entry.nodes.find((n) => n.type === "Outcome");
+        const combinedText = userIntent + " " + toolSequence.join(" ");
+
+        const chain: EventChain = {
+          id: entry.chainId,
+          taskId,
+          timestamp: entry.timestamp,
+          userIntent,
+          toolSequence,
+          outcome: outcomeNode?.properties?.success === false ? "failure" : "success",
+          events: [],
+          embedding: simpleEmbedding(combinedText),
+        };
+        this.chains.set(chain.id, chain);
       } catch {
         // skip malformed lines
       }
