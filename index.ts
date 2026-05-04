@@ -12,7 +12,7 @@ import type {
   RetrievalResult,
 } from "./src/types";
 
-const PLUGIN_VERSION = "1.17.2";
+const PLUGIN_VERSION = "1.18";
 const DEFAULT_PREFIX = "hello openclaw,";
 const questionTimestampByKey = new Map<string, number>();
 let latestQuestionTimestamp: number | null = null;
@@ -271,33 +271,58 @@ async function evaluateViaRuntime(
   api: any,
   ctx: any,
 ): Promise<number | null> {
-  const runAgent = api?.runtime?.agent?.runEmbeddedPiAgent;
-  if (typeof runAgent !== "function") return null;
+  if (typeof api?.runtime?.agent?.runEmbeddedPiAgent !== "function") return null;
 
   try {
     const sessionId = `llm-eval-${Date.now()}`;
-    const agentId = ctx?.agentId ?? "default";
-    const config = api?.config ?? {};
+    const config = api.config ?? {};
+    const agentId = ctx?.agentId ?? "main";
+    const agentsConfig = config?.agents?.defaults ?? {};
+
     const workspaceDir =
-      ctx?.workspaceDir ?? config?.workspaceDir ?? process.cwd();
+      ctx?.workspaceDir ??
+      agentsConfig?.workspace ??
+      config?.workspaceDir ??
+      process.cwd();
+
     let agentDir: string | undefined;
     try {
-      agentDir = api?.runtime?.agent?.resolveAgentDir?.(config, agentId);
+      agentDir = api.runtime.agent.resolveAgentDir?.(config, agentId);
     } catch {}
-    if (!agentDir) agentDir = workspaceDir;
+    if (!agentDir) {
+      agentDir = path.join(path.dirname(workspaceDir), "agents", agentId, "agent");
+    }
 
-    const result = await runAgent({
+    const sessionFile = path.join(agentDir, `llm-eval-${sessionId}.json`);
+
+    const provider =
+      ctx?.modelProviderId ?? lastLlmProvider ?? "miaoda";
+    const model =
+      ctx?.modelId ?? lastLlmModel ?? "miaoda-model-flash";
+
+    log("llm_eval", "runEmbeddedPiAgent params", {
+      sessionId,
+      agentId,
+      workspaceDir,
+      agentDir,
+      sessionFile,
+      provider,
+      model,
+    });
+
+    const result = await api.runtime.agent.runEmbeddedPiAgent({
       sessionId,
       sessionKey: ctx?.sessionKey ?? "llm-eval",
       agentId,
       messageProvider: ctx?.messageProvider,
       messageChannel: ctx?.channelId,
+      sessionFile,
       workspaceDir,
       agentDir,
       config,
       prompt,
-      provider: ctx?.modelProviderId ?? lastLlmProvider,
-      model: ctx?.modelId ?? lastLlmModel,
+      provider,
+      model,
       timeoutMs: 30000,
       runId: sessionId,
       trigger: "manual",
