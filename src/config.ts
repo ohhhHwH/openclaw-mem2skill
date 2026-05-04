@@ -7,9 +7,8 @@ export interface PluginConfig {
   lanceDbPath: string;
   scoreThreshold: number;
   embeddingDim: number;
-  llmApiUrl: string;
-  llmApiKey: string;
-  llmModel: string;
+  llmTaskProvider: string;
+  llmTaskModel: string;
 }
 
 const DEFAULT_BASE_DIR = path.join(os.homedir(), "workspace", "agent", "logs", "mem2skill");
@@ -20,9 +19,8 @@ const defaults: PluginConfig = {
   lanceDbPath: path.join(DEFAULT_BASE_DIR, "lance.db"),
   scoreThreshold: 0.8,
   embeddingDim: 64,
-  llmApiUrl: "",
-  llmApiKey: "",
-  llmModel: "gpt-4o-mini",
+  llmTaskProvider: "",
+  llmTaskModel: "",
 };
 
 export function resolveConfig(userConfig?: Record<string, any>): PluginConfig {
@@ -32,8 +30,7 @@ export function resolveConfig(userConfig?: Record<string, any>): PluginConfig {
     lanceDbPath: userConfig?.lanceDbPath ?? defaults.lanceDbPath,
     scoreThreshold: userConfig?.scoreThreshold ?? defaults.scoreThreshold,
     embeddingDim: userConfig?.embeddingDim ?? defaults.embeddingDim,
-    llmApiUrl: userConfig?.llmApiUrl ?? defaults.llmApiUrl,
-    llmApiKey: userConfig?.llmApiKey ?? defaults.llmApiKey,
-    llmModel: userConfig?.llmModel ?? defaults.llmModel,
+    llmTaskProvider: userConfig?.llmTaskProvider ?? defaults.llmTaskProvider,
+    llmTaskModel: userConfig?.llmTaskModel ?? defaults.llmTaskModel,
   };
 }

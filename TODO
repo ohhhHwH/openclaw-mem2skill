@@ -1,3 +1,4 @@
+
 # 创建框架
 # 流程设计
 # 参考 @ref/插件清单.txt  @ref/构建最小插件.txt   @ref/入口点文档.txt  
@@ -27,8 +28,11 @@
         # TODO bug 结果+ans 分数是 null - {"time":"2026-05-04T06:19:59.016Z","category":"llm_eval","message":"skipped: llmApiUrl or llmApiKey not configured","data":{}}
     # TODO 闲时线程操作 - 图对齐 - 相似事件特征提取/关节步骤提取等
 
-    # TODO BUG 没有get到历史事件链的记录 
-
+    #fix BUG 没有get到历史事件链的记录 
+    #fix BUG 检索后事件链没有加入到agentplan 中
+        # v1.16.1 就将其注入了，从agent_end中的对话中了
+            # 应该将消息注入到原始消息之后 - 当前返回 ""
+    # TODO bug 检索事件链中不要包含 最终回答 给出回答的 正确分数 / 置信度->问题相似性  之前回答的正确性改为->置信度，放在结果处
     
 
 # Mid Priority
@@ -48,13 +52,12 @@
                         # 该链接从前文中的 tool call 后的 tool_result 中来
                         # 当前认为如果查询的字符串 在之前的 tool_result 中能够找到（字符串匹配），那么认为是depend依赖关系 - 暂定
                 # TODO 将 think + prompt 投入 LLM 给出 依赖关系 和 上次 func call 评价！对上次 funcall 打分
-        
-        
         # TODO 图中 label( query ) -> "label":"今天leetcode每日一题是什么" -> 转成离散标准化的label
             # TODO 语义标准化拆解 - 暂定 prompt - 给问题打标签 拆解 - 类似与 kimi
             # TODO Query 相似度
     # TODO 最终回答 + query -> LLM 给出一个分数
         # TODO 事件链检索 - 结果反馈 - 用LLM
+        # TODO 结果低于 阈值 其图不做保存
     # TODO message_received 将原始信息 + retrival
         # TODO "category":"agent_plan","message":"reply_dispatch" 时，并没有接受到 retrival 中添加的事件链等信息
     # log 中 保留事件触发 message_received agent_end；日志保留  reply_dispatch llm_input；其他 删去(暂定-成功规划中用不到)

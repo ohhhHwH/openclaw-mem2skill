@@ -12,7 +12,7 @@ import type {
   RetrievalResult,
 } from "./src/types";
 
-const PLUGIN_VERSION = "1.16";
+const PLUGIN_VERSION = "1.17";
 const DEFAULT_PREFIX = "hello openclaw,";
 const questionTimestampByKey = new Map<string, number>();
 let latestQuestionTimestamp: number | null = null;
@@ -242,20 +242,18 @@ function buildRetrievalPrompt(
     sections.push("");
   }
 
-  return sections.join("\n");
+  // return sections.join("\n");
+  return "";
 }
 
-// ---- LLM 评估：对用户问题和最终回答进行评分 ----
+// ---- LLM 评估：通过 llm-task 插件对用户问题和最终回答进行评分 ----
 
 async function evaluateWithLlm(
   userQuestion: string,
   finalAnswer: string,
   config: PluginConfig,
+  api: any,
 ): Promise<number | null> {
-  if (!config.llmApiUrl || !config.llmApiKey) {
-    log("llm_eval", "skipped: llmApiUrl or llmApiKey not configured", {});
-    return null;
-  }
   if (!userQuestion || !finalAnswer) {
     log("llm_eval", "skipped: empty question or answer", {});
     return null;
@@ -267,37 +265,48 @@ async function evaluateWithLlm(
     `用户输入的问题是：${userQuestion}，最终回答是：${finalAnswer}。` +
     `最终回答只给出一个评分，不需要其他解释或信息。`;
 
+  const invokeToolFn =
+    api?.invokeTool ?? api?.tools?.invoke ?? api?.ctx?.invokeTool;
+  if (typeof invokeToolFn !== "function") {
+    log("llm_eval", "skipped: invokeTool not available on api", {});
+    return null;
+  }
+
   try {
-    const response = await fetch(config.llmApiUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.llmApiKey}`,
+    const toolArgs: Record<string, any> = {
+      prompt,
+      schema: {
+        type: "object",
+        properties: {
+          score: { type: "number" },
+        },
+        required: ["score"],
+        additionalProperties: false,
       },
-      body: JSON.stringify({
-        model: config.llmModel,
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0,
-        max_tokens: 16,
-      }),
-    });
+      temperature: 0,
+      maxTokens: 16,
+    };
+    if (config.llmTaskProvider) toolArgs.provider = config.llmTaskProvider;
+    if (config.llmTaskModel) toolArgs.model = config.llmTaskModel;
 
-    if (!response.ok) {
-      log("llm_eval", "LLM API request failed", {
-        status: response.status,
-        statusText: response.statusText,
-      });
-      return null;
-    }
+    const result = await invokeToolFn("llm-task", toolArgs);
 
-    const data = (await response.json()) as any;
-    const text: string =
-      data?.choices?.[0]?.message?.content?.trim() ?? "";
-    const score = parseFloat(text);
+    const score =
+      result?.json?.score ??
+      result?.details?.json?.score ??
+      result?.score ??
+      (() => {
+        const text =
+          typeof result === "string"
+            ? result
+            : result?.content?.[0]?.text ?? result?.text ?? "";
+        const parsed = parseFloat(String(text));
+        return isNaN(parsed) ? null : parsed;
+      })();
 
-    if (isNaN(score) || score < 0 || score > 1) {
-      log("llm_eval", "failed to parse score from LLM response", {
-        rawText: text,
+    if (typeof score !== "number" || isNaN(score) || score < 0 || score > 1) {
+      log("llm_eval", "failed to parse score from llm-task result", {
+        rawResult: safeStr(result),
       });
       return null;
     }
@@ -309,7 +318,7 @@ async function evaluateWithLlm(
     });
     return score;
   } catch (err: any) {
-    log("llm_eval", "LLM evaluation error", { error: String(err) });
+    log("llm_eval", "llm-task invocation error", { error: String(err) });
     return null;
   }
 }
