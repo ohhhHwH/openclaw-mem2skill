@@ -12,7 +12,7 @@ import type {
   RetrievalResult,
 } from "./src/types";
 
-const PLUGIN_VERSION = "1.14";
+const PLUGIN_VERSION = "1.15";
 const DEFAULT_PREFIX = "hello openclaw,";
 const questionTimestampByKey = new Map<string, number>();
 let latestQuestionTimestamp: number | null = null;
