@@ -23,6 +23,7 @@ let lastRunId: string | null = null;
 let pendingRetrievalPrompt: string | null = null;
 let lastLlmProvider: string | null = null;
 let lastLlmModel: string | null = null;
+let isEvaluating = false;
 
 function safeStr(val: any): string {
   if (val === undefined || val === null) return "";
@@ -668,6 +669,7 @@ export default definePluginEntry({
 
     // ---- llm_output: 纯日志记录 + 捕获 provider/model ----
     api.on("llm_output", (event: any) => {
+      if (isEvaluating) return;
       if (event?.provider) lastLlmProvider = event.provider;
       if (event?.model) lastLlmModel = event.model;
 
@@ -684,6 +686,7 @@ export default definePluginEntry({
 
     // ---- agent_end: 建图 + 导出事件链和图谱 ----
     api.on("agent_end", async (event: any, ctx: any) => {
+      if (isEvaluating) return;
       rememberLatestQuestionForEvent(event);
       const rawMessages = event?.messages ?? event?.event?.messages;
       const { messages: cleanedMessages, questionTimestamp } =
@@ -730,13 +733,19 @@ export default definePluginEntry({
           const outcomeNode = saved.nodes.find((n) => n.type === "Outcome");
           const userQuestion = saved.chain.userIntent;
           const finalAnswer = outcomeNode?.properties?.fullText ?? "";
-          const evalScore = await evaluateWithLlm(
-            userQuestion,
-            finalAnswer,
-            pluginConfig!,
-            api,
-            ctx,
-          );
+          isEvaluating = true;
+          let evalScore: number | null = null;
+          try {
+            evalScore = await evaluateWithLlm(
+              userQuestion,
+              finalAnswer,
+              pluginConfig!,
+              api,
+              ctx,
+            );
+          } finally {
+            isEvaluating = false;
+          }
 
           log("llm_eval_result", "LLM evaluation score", {
             chainId: saved.chainId,
