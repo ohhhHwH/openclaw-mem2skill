@@ -245,6 +245,75 @@ function buildRetrievalPrompt(
   return sections.join("\n");
 }
 
+// ---- LLM 评估：对用户问题和最终回答进行评分 ----
+
+async function evaluateWithLlm(
+  userQuestion: string,
+  finalAnswer: string,
+  config: PluginConfig,
+): Promise<number | null> {
+  if (!config.llmApiUrl || !config.llmApiKey) {
+    log("llm_eval", "skipped: llmApiUrl or llmApiKey not configured", {});
+    return null;
+  }
+  if (!userQuestion || !finalAnswer) {
+    log("llm_eval", "skipped: empty question or answer", {});
+    return null;
+  }
+
+  const prompt =
+    `请根据以下用户输入的问题和最终回答，判断回答的准确性和相关性，并给出一个0-1之间的评分，` +
+    `0表示完全不相关或错误，1表示完全相关且正确。` +
+    `用户输入的问题是：${userQuestion}，最终回答是：${finalAnswer}。` +
+    `最终回答只给出一个评分，不需要其他解释或信息。`;
+
+  try {
+    const response = await fetch(config.llmApiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.llmApiKey}`,
+      },
+      body: JSON.stringify({
+        model: config.llmModel,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0,
+        max_tokens: 16,
+      }),
+    });
+
+    if (!response.ok) {
+      log("llm_eval", "LLM API request failed", {
+        status: response.status,
+        statusText: response.statusText,
+      });
+      return null;
+    }
+
+    const data = (await response.json()) as any;
+    const text: string =
+      data?.choices?.[0]?.message?.content?.trim() ?? "";
+    const score = parseFloat(text);
+
+    if (isNaN(score) || score < 0 || score > 1) {
+      log("llm_eval", "failed to parse score from LLM response", {
+        rawText: text,
+      });
+      return null;
+    }
+
+    log("llm_eval", "evaluation complete", {
+      score,
+      userQuestion: userQuestion.slice(0, 200),
+      finalAnswer: finalAnswer.slice(0, 200),
+    });
+    return score;
+  } catch (err: any) {
+    log("llm_eval", "LLM evaluation error", { error: String(err) });
+    return null;
+  }
+}
+
 // ---- 图谱数据导出 ----
 
 function ensureDir(dir: string): void {
@@ -529,6 +598,22 @@ export default definePluginEntry({
         if (saved) {
           exportEventChainData(saved.chain, pluginConfig!);
           exportGraphData(saved.chainId, saved.nodes, saved.rels, pluginConfig!);
+
+          const outcomeNode = saved.nodes.find((n) => n.type === "Outcome");
+          const userQuestion = saved.chain.userIntent;
+          const finalAnswer = outcomeNode?.properties?.fullText ?? "";
+          const evalScore = await evaluateWithLlm(
+            userQuestion,
+            finalAnswer,
+            pluginConfig!,
+          );
+
+          log("llm_eval_result", "LLM evaluation score", {
+            chainId: saved.chainId,
+            score: evalScore,
+            userQuestion: userQuestion.slice(0, 200),
+            finalAnswer: String(finalAnswer).slice(0, 200),
+          });
         }
 
         log("graph_build", "agent_end graph built and exported", {

@@ -19,6 +19,14 @@
 
 #测试脚本
 
+# High Priority
+
+# TODO 图对齐 - 暂定 prompt
+    # TODO openclaw 调用LLM
+        ...拆解 / 相似度 / 最终回答等
+    # TODO 闲时线程操作 - 图对齐 - 相似事件特征提取/关节步骤提取等
+
+# Mid Priority
 
 #TODO 将前期设想合并进来
     # TODO 合并主干部分（query/tool call/ans保存，建图，图匹配，检索）
@@ -35,7 +43,7 @@
                         # 该链接从前文中的 tool call 后的 tool_result 中来
                         # 当前认为如果查询的字符串 在之前的 tool_result 中能够找到（字符串匹配），那么认为是depend依赖关系 - 暂定
                 # TODO 将 think + prompt 投入 LLM 给出 依赖关系 和 上次 func call 评价！对上次 funcall 打分
-        # TODO 图对齐 - 暂定 prompt
+        
         
         # TODO 图中 label( query ) -> "label":"今天leetcode每日一题是什么" -> 转成离散标准化的label
             # TODO 语义标准化拆解 - 暂定 prompt - 给问题打标签 拆解 - 类似与 kimi
