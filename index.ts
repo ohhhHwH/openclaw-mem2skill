@@ -21,6 +21,8 @@ let processor: Processor | null = null;
 let pluginConfig: PluginConfig | null = null;
 let lastRunId: string | null = null;
 let pendingRetrievalPrompt: string | null = null;
+let lastLlmProvider: string | null = null;
+let lastLlmModel: string | null = null;
 
 function safeStr(val: any): string {
   if (val === undefined || val === null) return "";
@@ -287,8 +289,8 @@ async function evaluateViaRuntime(
       agentDir: api?.runtime?.agent?.resolveAgentDir?.(config, agentId),
       config,
       prompt,
-      provider: ctx?.modelProviderId,
-      model: ctx?.modelId,
+      provider: ctx?.modelProviderId ?? lastLlmProvider,
+      model: ctx?.modelId ?? lastLlmModel,
       timeoutMs: 30000,
       runId: sessionId,
       trigger: "manual",
@@ -632,8 +634,11 @@ export default definePluginEntry({
       });
     });
 
-    // ---- llm_output: 纯日志记录 ----
+    // ---- llm_output: 纯日志记录 + 捕获 provider/model ----
     api.on("llm_output", (event: any) => {
+      if (event?.provider) lastLlmProvider = event.provider;
+      if (event?.model) lastLlmModel = event.model;
+
       log("llm_output", "llm_output", {
         content: safeStr(
           event?.text ?? event?.content ?? event?.response ?? event
