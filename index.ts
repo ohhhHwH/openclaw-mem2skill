@@ -12,7 +12,7 @@ import type {
   RetrievalResult,
 } from "./src/types";
 
-const PLUGIN_VERSION = "1.17.1";
+const PLUGIN_VERSION = "1.17.2";
 const DEFAULT_PREFIX = "hello openclaw,";
 const questionTimestampByKey = new Map<string, number>();
 let latestQuestionTimestamp: number | null = null;
@@ -267,25 +267,53 @@ function parseEvalScore(text: string): number | null {
 async function evaluateViaRuntime(
   prompt: string,
   api: any,
+  ctx: any,
 ): Promise<number | null> {
   const runAgent = api?.runtime?.agent?.runEmbeddedPiAgent;
   if (typeof runAgent !== "function") return null;
 
   try {
+    const sessionId = `llm-eval-${Date.now()}`;
+    const agentId = ctx?.agentId ?? "default";
+    const config = api?.config ?? {};
+
     const result = await runAgent({
+      sessionId,
+      sessionKey: ctx?.sessionKey,
+      agentId,
+      messageProvider: ctx?.messageProvider,
+      messageChannel: ctx?.channelId,
+      workspaceDir: ctx?.workspaceDir,
+      agentDir: api?.runtime?.agent?.resolveAgentDir?.(config, agentId),
+      config,
       prompt,
-      disableTools: true,
+      provider: ctx?.modelProviderId,
+      model: ctx?.modelId,
       timeoutMs: 30000,
+      runId: sessionId,
+      trigger: "manual",
+      toolsAllow: [],
+      disableTools: true,
+      disableMessageTool: true,
+      bootstrapContextMode: "lightweight",
+      verboseLevel: "off",
+      reasoningLevel: "off",
+      silentExpected: true,
     });
 
-    const text =
-      result?.text ??
-      result?.content ??
-      result?.response ??
-      result?.messages?.findLast?.((m: any) => m.role === "assistant")
-        ?.content ??
-      "";
-    return parseEvalScore(String(text));
+    const text = (result?.payloads ?? [])
+      .map((p: any) => p?.text?.trim?.() ?? "")
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+
+    if (!text) {
+      log("llm_eval", "runEmbeddedPiAgent returned empty text", {
+        rawResult: safeStr(result),
+      });
+      return null;
+    }
+    return parseEvalScore(text);
   } catch (err: any) {
     log("llm_eval", "runEmbeddedPiAgent error", { error: String(err) });
     return null;
@@ -336,6 +364,7 @@ async function evaluateWithLlm(
   finalAnswer: string,
   config: PluginConfig,
   api: any,
+  ctx?: any,
 ): Promise<number | null> {
   if (!userQuestion || !finalAnswer) {
     log("llm_eval", "skipped: empty question or answer", {});
@@ -345,7 +374,7 @@ async function evaluateWithLlm(
   const prompt = buildEvalPrompt(userQuestion, finalAnswer);
 
   // 优先使用 OpenClaw runtime 内置 LLM 调用
-  let score = await evaluateViaRuntime(prompt, api);
+  let score = await evaluateViaRuntime(prompt, api, ctx);
   if (typeof score === "number") {
     log("llm_eval", "evaluation complete (runtime)", {
       score,
@@ -617,7 +646,7 @@ export default definePluginEntry({
     });
 
     // ---- agent_end: 建图 + 导出事件链和图谱 ----
-    api.on("agent_end", async (event: any) => {
+    api.on("agent_end", async (event: any, ctx: any) => {
       rememberLatestQuestionForEvent(event);
       const rawMessages = event?.messages ?? event?.event?.messages;
       const { messages: cleanedMessages, questionTimestamp } =
@@ -669,6 +698,7 @@ export default definePluginEntry({
             finalAnswer,
             pluginConfig!,
             api,
+            ctx,
           );
 
           log("llm_eval_result", "LLM evaluation score", {
