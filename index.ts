@@ -12,7 +12,7 @@ import type {
   RetrievalResult,
 } from "./src/types";
 
-const PLUGIN_VERSION = "1.18.2";
+const PLUGIN_VERSION = "1.18.3";
 const DEFAULT_PREFIX = "hello openclaw,";
 const questionTimestampByKey = new Map<string, number>();
 let latestQuestionTimestamp: number | null = null;
@@ -583,6 +583,7 @@ export default definePluginEntry({
             total: results.length,
             threshold,
             topScore: results[0]?.score,
+            topQuestion: results[0]?.chain.userIntent,
           });
           return;
         }
