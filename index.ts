@@ -12,7 +12,7 @@ import type {
   RetrievalResult,
 } from "./src/types";
 
-const PLUGIN_VERSION = "1.18";
+const PLUGIN_VERSION = "1.18.2";
 const DEFAULT_PREFIX = "hello openclaw,";
 const questionTimestampByKey = new Map<string, number>();
 let latestQuestionTimestamp: number | null = null;
@@ -21,6 +21,7 @@ let processor: Processor | null = null;
 let pluginConfig: PluginConfig | null = null;
 let lastRunId: string | null = null;
 let pendingRetrievalPrompt: string | null = null;
+let pendingOriginalText: string | null = null;
 let lastLlmProvider: string | null = null;
 let lastLlmModel: string | null = null;
 let isEvaluating = false;
@@ -172,9 +173,7 @@ function topoSortActions(
   return sorted;
 }
 
-function buildPromptFromGraph(entry: GraphEntry): string {
-  const intentNode = entry.nodes.find((n) => n.type === "Intent")!;
-  const outcomeNode = entry.nodes.find((n) => n.type === "Outcome");
+function buildToolPathFromGraph(entry: GraphEntry): string {
   const actionNodes = entry.nodes.filter((n) => n.type === "Action");
   const dependsRels = entry.rels.filter((r) => r.type === "DEPENDS_ON");
   const resultsInRel = entry.rels.find((r) => r.type === "RESULTS_IN");
@@ -196,10 +195,6 @@ function buildPromptFromGraph(entry: GraphEntry): string {
   }
 
   const lines: string[] = [];
-  lines.push(`用户意图: ${intentNode.label}`);
-  lines.push("");
-  lines.push(`执行路径:`);
-
   for (let i = 0; i < sorted.length; i++) {
     const a = sorted[i];
     const query = extractQuery(a);
@@ -213,15 +208,15 @@ function buildPromptFromGraph(entry: GraphEntry): string {
       causeTag = ` ← 基于 ${top.fromLabel} 的结果`;
     }
 
-    lines.push(`  ${i + 1}. ${a.label}(${query})${causeTag}${rwTag}`);
-  }
-
-  if (outcomeNode) {
-    lines.push("");
-    lines.push(`结果: ${outcomeNode.label}`);
+    lines.push(`${i + 1}. ${a.label}(${query})${causeTag}${rwTag}`);
   }
 
   return lines.join("\n");
+}
+
+function getEvalScoreFromGraph(entry: GraphEntry): number {
+  const outcomeNode = entry.nodes.find((n) => n.type === "Outcome");
+  return outcomeNode?.properties?.evalScore ?? 1;
 }
 
 function buildRetrievalPrompt(
@@ -229,23 +224,27 @@ function buildRetrievalPrompt(
 ): string {
   if (hits.length === 0) return "";
 
-  const sections: string[] = [];
-  sections.push("以下是与当前问题相关的历史执行记录，可参考其中的工具调用路径：");
-  sections.push("");
+  const parts: string[] = [];
 
-  for (let i = 0; i < hits.length; i++) {
-    const { result, graphEntry } = hits[i];
-    sections.push(`--- 历史记录 #${i + 1} (置信度: ${result.score.toFixed(4)}) ---`);
+  for (const { result, graphEntry } of hits) {
+    const similarity = result.score.toFixed(4);
+    const confidence = graphEntry ? getEvalScoreFromGraph(graphEntry) : 1;
+    const historyQuestion = result.chain.userIntent;
+
+    let toolPath: string;
     if (graphEntry) {
-      sections.push(buildPromptFromGraph(graphEntry));
+      toolPath = buildToolPathFromGraph(graphEntry);
     } else {
-      sections.push(`用户意图: ${result.chain.userIntent}`);
-      sections.push(`工具序列: ${result.chain.toolSequence.join(" → ")}`);
+      toolPath = result.chain.toolSequence.join(" → ");
     }
-    sections.push("");
+
+    parts.push(
+      `以下是与当前问题相关的历史执行记录，${historyQuestion}(问题相似性: ${similarity}, 结果置信度: ${confidence})`,
+    );
+    parts.push(`可参考其中的工具调用路径：${toolPath}`);
   }
 
-  return sections.join("\n");
+  return parts.join("\n");
 }
 
 // ---- LLM 评估：对用户问题和最终回答进行评分 ----
@@ -616,23 +615,25 @@ export default definePluginEntry({
 
         if (prompt) {
           pendingRetrievalPrompt = prompt;
+          pendingOriginalText = content;
         }
       } catch (err: any) {
         log("error", "retrieval failed", { error: String(err) });
       }
     });
 
-    // ---- before_prompt_build: 将检索到的事件链注入 agent 上下文 ----
+    // ---- before_prompt_build: 将检索到的事件链注入原始消息之后 ----
     api.on("before_prompt_build", (_event: any) => {
-
+      
       return undefined;
-      if (pendingRetrievalPrompt) {
-        const prompt = pendingRetrievalPrompt;
+      if (pendingRetrievalPrompt && pendingOriginalText) {
+        const combined = `${pendingOriginalText}\n${pendingRetrievalPrompt}`;
         pendingRetrievalPrompt = null;
+        pendingOriginalText = null;
         log("retrieval", "injecting prompt via before_prompt_build", {
-          length: prompt.length,
+          length: combined.length,
         });
-        return { prependContext: prompt };
+        return { replaceMessage: combined };
       }
       return undefined;
     });
@@ -745,6 +746,12 @@ export default definePluginEntry({
             );
           } finally {
             isEvaluating = false;
+          }
+
+          if (evalScore !== null && outcomeNode) {
+            outcomeNode.properties.evalScore = evalScore;
+            const storage: any = (processor as any).storage;
+            await storage.saveGraph(saved.chainId, saved.nodes, saved.rels);
           }
 
           log("llm_eval_result", "LLM evaluation score", {
