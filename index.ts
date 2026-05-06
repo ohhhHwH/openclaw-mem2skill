@@ -12,7 +12,7 @@ import type {
   RetrievalResult,
 } from "./src/types";
 
-const PLUGIN_VERSION = "1.18.4";
+const PLUGIN_VERSION = "1.18.6";
 const DEBUG = true;
 const DEFAULT_PREFIX = "hello openclaw,";
 const questionTimestampByKey = new Map<string, number>();
@@ -696,7 +696,7 @@ export default definePluginEntry({
                 "RawBody": "今天的leetcode每日一题是什么？leetcode官网的",
           }
       */
-      if (pendingRetrievalPrompt) {
+      if (pendingRetrievalPrompt) { // 有概率不触发？？
         const injection = `\n[以下是与当前问题相关的历史执行记录，可参考其中的工具调用路径]\n${pendingRetrievalPrompt}`;
         if (event?.ctx?.BodyForAgent) {
           event.ctx.BodyForAgent += injection;
