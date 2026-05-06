@@ -67,7 +67,7 @@
         # TEST 中有bug 
         # test中 保存事件链为相同问题
         # test没有进行 历史事件链检索 的测试，以及历史事件链的向量表和对应原始文本
-    
+    # TODO 当/new等特殊指令时不做记录等操作
 # Low Priority
     # TODO 创建CONFIG文件，包含日志路径，图谱数据路径等
     # TODO storage.ts PATH 路径指定

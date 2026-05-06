@@ -260,7 +260,7 @@ function buildRetrievalPrompt(
     }
 
     parts.push(
-      `以下是与当前问题相关的历史执行记录，${historyQuestion}(问题相似性: ${similarity}, 结果置信度: ${confidence})`,
+      `以下是与当前问题相关的历史执行记录，问题：(${historyQuestion}) (问题相似性: ${similarity}, 结果置信度: ${confidence})`,
     );
     parts.push(`可参考其中的工具调用路径：${toolPath}`);
   }
@@ -309,7 +309,7 @@ async function evaluateViaRuntime(
     let agentDir: string | undefined;
     try {
       agentDir = api.runtime.agent.resolveAgentDir?.(config, agentId);
-    } catch {}
+    } catch { }
     if (!agentDir) {
       agentDir = path.join(path.dirname(workspaceDir), "agents", agentId, "agent");
     }
@@ -646,21 +646,32 @@ export default definePluginEntry({
       }
     });
 
-    // ---- before_prompt_build: 将检索到的事件链注入原始消息之后 ----
-    api.on("before_prompt_build", (_event: any) => {
-      
-      // return undefined;
-      if (pendingRetrievalPrompt && pendingOriginalText) {
-        const combined = `${pendingOriginalText}\n${pendingRetrievalPrompt}`;
-        pendingRetrievalPrompt = null;
-        pendingOriginalText = null;
-        log("retrieval", "injecting prompt via before_prompt_build", {
-          length: combined.length,
-        });
-        return { replaceMessage: combined };
-      }
-      return undefined;
-    });
+    // ---- before_prompt_build: 将检索到的事件链注入 agent 上下文 ----
+    // api.on("before_prompt_build", (_event: any) => {
+    //   if (pendingRetrievalPrompt) {
+    //     const prompt = pendingRetrievalPrompt;
+    //     pendingRetrievalPrompt = null;
+    //     log("retrieval", "injecting prompt via before_prompt_build", {
+    //       length: prompt.length,
+    //     });
+    //     return { prependContext: prompt };
+    //   }
+    //   return undefined;
+    // });
+
+    // ---- before_prompt_build: 将检索到的事件链注入原始消息之后 ---- 不生效？？
+    // api.on("before_prompt_build", (_event: any) => {
+    //   if (pendingRetrievalPrompt && pendingOriginalText) {
+    //     const combined = `${pendingOriginalText}\n${pendingRetrievalPrompt}`;
+    //     pendingRetrievalPrompt = null;
+    //     pendingOriginalText = null;
+    //     log("retrieval", "injecting prompt via before_prompt_build", {
+    //       length: combined.length,
+    //     });
+    //     return { replaceMessage: combined };
+    //   }
+    //   return undefined;
+    // });
 
     // ---- reply_dispatch ----
     api.on("reply_dispatch", (event: any) => {
@@ -672,8 +683,34 @@ export default definePluginEntry({
           typeof event === "string" ? event : event?.content ?? "{}"
         );
         runId = parsed.runId ?? parsed.ctx?.MessageSid;
-      } catch {}
+      } catch { }
       if (runId) lastRunId = runId;
+
+      // 将 event 中 BodyForAgent 末尾加上 Prompt 注入的内容，方便后续分析
+      /*
+        "event": {
+            "ctx": {
+                "Body": "今天的leetcode每日一题是什么？leetcode官网的",
+                "BodyForAgent": "[Wed 2026-05-06 14:27 UTC] 今天的leetcode每日一题是什么？leetcode官网的",
+                "BodyForCommands": "今天的leetcode每日一题是什么？leetcode官网的",
+                "RawBody": "今天的leetcode每日一题是什么？leetcode官网的",
+          }
+      */
+      if (pendingRetrievalPrompt) {
+        const injection = `\n[以下是与当前问题相关的历史执行记录，可参考其中的工具调用路径]\n${pendingRetrievalPrompt}`;
+        if (event?.ctx?.BodyForAgent) {
+          event.ctx.BodyForAgent += injection;
+        }
+        if (event?.ctx?.Body) {
+          event.ctx.Body += injection;
+        }
+        if (event?.ctx?.BodyForCommands) {
+          event.ctx.BodyForCommands += injection;
+        }
+        if (event?.ctx?.RawBody) {
+          event.ctx.RawBody += injection;
+        }
+      }
 
       log("agent_plan", "reply_dispatch", {
         content: safeStr(event),
