@@ -265,7 +265,7 @@ function buildRetrievalPrompt(
     parts.push(`可参考其中的工具调用路径：${toolPath}`);
   }
 
-  return parts.join("\n");
+  return parts.join("\n以下是用户提出的原始问题:");
 }
 
 // ---- LLM 评估：对用户问题和最终回答进行评分 ----
@@ -647,17 +647,17 @@ export default definePluginEntry({
     });
 
     // ---- before_prompt_build: 将检索到的事件链注入 agent 上下文 ----
-    // api.on("before_prompt_build", (_event: any) => {
-    //   if (pendingRetrievalPrompt) {
-    //     const prompt = pendingRetrievalPrompt;
-    //     pendingRetrievalPrompt = null;
-    //     log("retrieval", "injecting prompt via before_prompt_build", {
-    //       length: prompt.length,
-    //     });
-    //     return { prependContext: prompt };
-    //   }
-    //   return undefined;
-    // });
+    api.on("before_prompt_build", (_event: any) => {
+      if (pendingRetrievalPrompt) {
+        const prompt = pendingRetrievalPrompt;
+        pendingRetrievalPrompt = null;
+        log("retrieval", "injecting prompt via before_prompt_build", {
+          length: prompt.length,
+        });
+        return { prependContext: prompt };
+      }
+      return undefined;
+    });
 
     // ---- before_prompt_build: 将检索到的事件链注入原始消息之后 ---- 不生效？？
     // api.on("before_prompt_build", (_event: any) => {
@@ -710,6 +710,9 @@ export default definePluginEntry({
         if (event?.ctx?.RawBody) {
           event.ctx.RawBody += injection;
         }
+      }
+      else {
+        log("agent_plan", "no prompt to inject at reply_dispatch")
       }
 
       log("agent_plan", "reply_dispatch", {
