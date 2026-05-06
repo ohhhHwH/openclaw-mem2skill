@@ -13,6 +13,7 @@ import type {
 } from "./src/types";
 
 const PLUGIN_VERSION = "1.18.4";
+const DEBUG = true;
 const DEFAULT_PREFIX = "hello openclaw,";
 const questionTimestampByKey = new Map<string, number>();
 let latestQuestionTimestamp: number | null = null;
@@ -557,6 +558,7 @@ export default definePluginEntry({
       processor = new Processor({
         lanceDbPath: pluginConfig.lanceDbPath,
         graphLogPath: pluginConfig.graphLogPath,
+        debug: DEBUG,
       });
 
       processor.init().catch((err: any) => {
@@ -749,7 +751,7 @@ export default definePluginEntry({
         await processor.onAgentEnd(agentEndEvent);
 
         const saved = processor.getLastSavedGraph();
-        if (saved) {
+        if (saved && !DEBUG) {
           exportEventChainData(saved.chain, pluginConfig!);
           exportGraphData(saved.chainId, saved.nodes, saved.rels, pluginConfig!);
 

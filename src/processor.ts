@@ -30,6 +30,7 @@ function parseDataContent(event: any): any {
 
 export class Processor {
   private storage: Storage;
+  private debug: boolean;
   private activeChains: Map<string, EventChain> = new Map();
   private pendingTaskId: string | null = null;
   private currentRunId: string | null = null;
@@ -52,8 +53,9 @@ export class Processor {
     rels: GraphRelationship[];
   } | null = null;
 
-  constructor(config: StorageConfig) {
+  constructor(config: StorageConfig & { debug?: boolean }) {
     this.storage = new Storage(config);
+    this.debug = config.debug ?? false;
   }
 
   async init(): Promise<void> {
@@ -264,8 +266,9 @@ export class Processor {
       chain.userIntent + " " + chain.toolSequence.join(" ")
     );
 
-    await this.storage.saveEventChain(chain);
-
+    if (!this.debug) {
+      await this.storage.saveEventChain(chain);
+    }
     // --- 从 messages 中提取最终回复文本 ---
     const assistantTexts = this.extractAssistantTexts(messages);
     const answerText = assistantTexts.join("\n");
@@ -359,7 +362,9 @@ export class Processor {
       });
     }
 
-    await this.storage.saveGraph(chain.id, nodes, rels);
+    if (!this.debug) {
+      await this.storage.saveGraph(chain.id, nodes, rels);
+    }
 
     this.lastSavedGraph = { chainId: chain.id, chain, nodes, rels };
     this.activeChains.delete(chain.taskId);
@@ -432,7 +437,9 @@ export class Processor {
       });
     }
 
-    await this.storage.saveGraph(chain.id, nodes, rels);
+    if (!this.debug) {
+      await this.storage.saveGraph(chain.id, nodes, rels);
+    }
     this.pendingGraphData.delete(chain.taskId);
   }
 
