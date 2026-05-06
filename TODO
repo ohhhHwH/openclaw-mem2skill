@@ -27,14 +27,16 @@
         ...拆解 / 相似度 / 最终回答等
         # bug 结果+ans 分数是 null - {"time":"2026-05-04T06:19:59.016Z","category":"llm_eval","message":"skipped: llmApiUrl or llmApiKey not configured","data":{}}
     # TODO 闲时线程操作 - 图对齐 - 相似事件特征提取/关节步骤提取等
-
+    # TODO 长短期记忆转化
     #fix BUG 没有get到历史事件链的记录 
     #fix BUG 检索后事件链没有加入到agentplan 中
         # v1.16.1 就将其注入了，从agent_end中的对话中了
             # 应该将消息注入到原始消息之后 - 当前返回 ""
     # TODO bug 检索事件链中不要包含 最终回答 给出回答的 正确分数 / 置信度->问题相似性  之前回答的正确性改为->置信度，放在结果处
     
+    
 
+    # TODO 复赛文档补图
 # Mid Priority
 
 #TODO 将前期设想合并进来

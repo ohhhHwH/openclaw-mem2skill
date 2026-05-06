@@ -12,7 +12,7 @@ import type {
   RetrievalResult,
 } from "./src/types";
 
-const PLUGIN_VERSION = "1.18.3";
+const PLUGIN_VERSION = "1.18.4";
 const DEFAULT_PREFIX = "hello openclaw,";
 const questionTimestampByKey = new Map<string, number>();
 let latestQuestionTimestamp: number | null = null;
@@ -217,6 +217,26 @@ function buildToolPathFromGraph(entry: GraphEntry): string {
 function getEvalScoreFromGraph(entry: GraphEntry): number {
   const outcomeNode = entry.nodes.find((n) => n.type === "Outcome");
   return outcomeNode?.properties?.evalScore ?? 1;
+}
+
+function selectBestHit(
+  hits: Array<{ result: RetrievalResult; graphEntry?: GraphEntry }>,
+): { result: RetrievalResult; graphEntry?: GraphEntry } | null {
+  if (hits.length === 0) return null;
+  if (hits.length === 1) return hits[0];
+
+  let best = hits[0];
+  let bestScore = -1;
+  for (const hit of hits) {
+    const similarity = hit.result.score;
+    const evalScore = hit.graphEntry ? getEvalScoreFromGraph(hit.graphEntry) : 1;
+    const combined = similarity * evalScore;
+    if (combined > bestScore) {
+      bestScore = combined;
+      best = hit;
+    }
+  }
+  return best;
 }
 
 function buildRetrievalPrompt(
@@ -604,7 +624,8 @@ export default definePluginEntry({
           return { result, graphEntry };
         });
 
-        const prompt = buildRetrievalPrompt(hits);
+        const bestHit = selectBestHit(hits);
+        const prompt = bestHit ? buildRetrievalPrompt([bestHit]) : "";
 
         log("retrieval", "hits found", {
           query: content,
