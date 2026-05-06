@@ -647,7 +647,7 @@ export default definePluginEntry({
     // ---- before_prompt_build: 将检索到的事件链注入原始消息之后 ----
     api.on("before_prompt_build", (_event: any) => {
       
-      return undefined;
+      // return undefined;
       if (pendingRetrievalPrompt && pendingOriginalText) {
         const combined = `${pendingOriginalText}\n${pendingRetrievalPrompt}`;
         pendingRetrievalPrompt = null;
