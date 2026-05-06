@@ -751,9 +751,11 @@ export default definePluginEntry({
         await processor.onAgentEnd(agentEndEvent);
 
         const saved = processor.getLastSavedGraph();
-        if (saved && !DEBUG) {
-          exportEventChainData(saved.chain, pluginConfig!);
-          exportGraphData(saved.chainId, saved.nodes, saved.rels, pluginConfig!);
+        if (saved) {
+          if (!DEBUG) {
+            exportEventChainData(saved.chain, pluginConfig!);
+            exportGraphData(saved.chainId, saved.nodes, saved.rels, pluginConfig!);
+          }
 
           const outcomeNode = saved.nodes.find((n) => n.type === "Outcome");
           const userQuestion = saved.chain.userIntent;
@@ -774,8 +776,10 @@ export default definePluginEntry({
 
           if (evalScore !== null && outcomeNode) {
             outcomeNode.properties.evalScore = evalScore;
-            const storage: any = (processor as any).storage;
-            await storage.saveGraph(saved.chainId, saved.nodes, saved.rels);
+            if (!DEBUG) {
+              const storage: any = (processor as any).storage;
+              await storage.saveGraph(saved.chainId, saved.nodes, saved.rels);
+            }
           }
 
           log("llm_eval_result", "LLM evaluation score", {
