@@ -35,6 +35,7 @@
     # TODO bug 检索事件链中不要包含 最终回答 给出回答的 正确分数 / 置信度->问题相似性  之前回答的正确性改为->置信度，放在结果处
     
     # TODO reply_dispatch 中 prompt添加有概率不触发？？
+        # TODO 会修改原始信息
     # todo before_prompt_build 和 reply_dispatch 重复注入了
 
     # TODO 复赛文档补图

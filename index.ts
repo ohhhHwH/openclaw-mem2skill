@@ -701,15 +701,15 @@ export default definePluginEntry({
         if (event?.ctx?.BodyForAgent) {
           event.ctx.BodyForAgent += injection;
         }
-        if (event?.ctx?.Body) {
-          event.ctx.Body += injection;
-        }
-        if (event?.ctx?.BodyForCommands) {
-          event.ctx.BodyForCommands += injection;
-        }
-        if (event?.ctx?.RawBody) {
-          event.ctx.RawBody += injection;
-        }
+        // if (event?.ctx?.Body) {
+        //   event.ctx.Body += injection;
+        // }
+        // if (event?.ctx?.BodyForCommands) {
+        //   event.ctx.BodyForCommands += injection;
+        // }
+        // if (event?.ctx?.RawBody) {
+        //   event.ctx.RawBody += injection;
+        // }
       }
       else {
         log("agent_plan", "no prompt to inject at reply_dispatch")
