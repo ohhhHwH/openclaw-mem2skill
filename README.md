@@ -1,5 +1,6 @@
 # openclaw 插件 - mem2skill
 
+项目定位: 一个 OpenClaw 插件（memory2skill），将对话任务抽象为事件链与知识图谱，基于向量检索提取历史经验并自动生成/迭代可复用“技能”。
 
 
 ## 插件安装
@@ -369,4 +370,6 @@ function log(category: string, message: string, data?: any): void
 ```bash
 # 插件本地测试
 npm test
+npx vitest run test/simulate.test.ts 
+npx vitest run test/retrieval.test.ts --reporter=verbose
 ```
