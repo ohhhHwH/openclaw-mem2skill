@@ -20,6 +20,10 @@ openclaw gateway restart
 openclaw plugins uninstall memory2skill
 ```
 
+注：当前模式为DEBUG模式，需要有 历史事件链 数据才能成功检索运行。
+需要关闭DEBUG模式，修改 src/processor.ts 中的 `const DEBUG = true` 为 `false`，并重新编译打包安装。
+然后生成 事件链 ，关闭DEBUG模式后不会输出建图等，只会进行检索和打分，来验证 mem2skill 的效果。
+
 ## openclaw流程
 
 用户输入-> 预处理层 -> 任务分发层 -> 插件执行层 -> 结果返回
