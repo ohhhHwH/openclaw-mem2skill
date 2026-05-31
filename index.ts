@@ -1,7 +1,7 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import fs from "fs";
 import path from "path";
-import { log } from "./src/logger";
+import { log, setLogPath } from "./src/logger";
 import { Processor, simpleEmbedding } from "./src/processor";
 import { resolveConfig } from "./src/config";
 import type { PluginConfig } from "./src/config";
@@ -13,7 +13,6 @@ import type {
 } from "./src/types";
 
 const PLUGIN_VERSION = "1.18.6";
-const DEBUG = true;
 const DEFAULT_PREFIX = "hello openclaw,";
 const questionTimestampByKey = new Map<string, number>();
 let latestQuestionTimestamp: number | null = null;
@@ -22,7 +21,7 @@ let processor: Processor | null = null;
 let pluginConfig: PluginConfig | null = null;
 let lastRunId: string | null = null;
 let pendingRetrievalPrompt: string | null = null;
-let pendingOriginalText: string | null = null;
+let pendingRetrievalPromise: Promise<void> | null = null;
 let lastLlmProvider: string | null = null;
 let lastLlmModel: string | null = null;
 let isEvaluating = false;
@@ -245,9 +244,13 @@ function buildRetrievalPrompt(
 ): string {
   if (hits.length === 0) return "";
 
-  const parts: string[] = [];
+  const sections: string[] = [];
+  sections.push("[历史经验参考]");
+  sections.push("以下是与当前问题相似的历史执行记录，你可以参考其中的工具调用策略来规划当前任务。");
+  sections.push("");
 
-  for (const { result, graphEntry } of hits) {
+  for (let i = 0; i < hits.length; i++) {
+    const { result, graphEntry } = hits[i];
     const similarity = result.score.toFixed(4);
     const confidence = graphEntry ? getEvalScoreFromGraph(graphEntry) : 1;
     const historyQuestion = result.chain.userIntent;
@@ -259,13 +262,20 @@ function buildRetrievalPrompt(
       toolPath = result.chain.toolSequence.join(" → ");
     }
 
-    parts.push(
-      `以下是与当前问题相关的历史执行记录，问题：(${historyQuestion}) (问题相似性: ${similarity}, 结果置信度: ${confidence})`,
-    );
-    parts.push(`可参考其中的工具调用路径：${toolPath}`);
+    sections.push(`--- 历史记录 #${i + 1} ---`);
+    sections.push(`历史问题: ${historyQuestion}`);
+    sections.push(`相似度: ${similarity} | 结果置信度: ${confidence}`);
+    sections.push(`工具调用路径:`);
+    sections.push(toolPath);
+    sections.push("");
   }
 
-  return parts.join("\n以下是用户提出的原始问题:");
+  sections.push("[规划建议]");
+  sections.push("请参考上述历史工具调用路径，选择合适的工具和调用顺序来回答当前问题。如果历史路径不完全适用，可以根据当前问题的具体需求进行调整。");
+  sections.push("");
+  sections.push("以下是用户提出的原始问题:");
+
+  return sections.join("\n");
 }
 
 // ---- LLM 评估：对用户问题和最终回答进行评分 ----
@@ -545,7 +555,7 @@ export default definePluginEntry({
     "Captures user input, agent plans, skill invocations and tool calls; retrieves similar historical chains and builds knowledge graphs",
 
   register(api) {
-    log("plugin", `memory2skill v${PLUGIN_VERSION} registered`, {
+    log("lifecycle", `memory2skill v${PLUGIN_VERSION} registered`, {
       mode: api.registrationMode,
     });
 
@@ -553,12 +563,12 @@ export default definePluginEntry({
 
     const userConfig = (api as any).config ?? {};
     pluginConfig = resolveConfig(userConfig);
+    setLogPath(pluginConfig.logPath);
 
     if (!processor) {
       processor = new Processor({
         lanceDbPath: pluginConfig.lanceDbPath,
         graphLogPath: pluginConfig.graphLogPath,
-        debug: DEBUG,
       });
 
       processor.init().catch((err: any) => {
@@ -586,68 +596,74 @@ export default definePluginEntry({
         event,
       });
 
+      if (content.startsWith("/")) return;
       if (!processor || !pluginConfig) return;
 
-      try {
-        const results = await processor.onMessageReceived({
-          time: Date.now(),
-          data: {
-            original: content,
-            taskId: event?.taskId ?? `task-${Date.now()}`,
-          },
-        });
+      const retrievalWork = (async () => {
+        try {
+          const results = await processor!.onMessageReceived({
+            time: Date.now(),
+            data: {
+              original: content,
+              taskId: event?.taskId ?? `task-${Date.now()}`,
+            },
+          });
 
-        const threshold = pluginConfig.scoreThreshold;
-        const filtered = results.filter((r) => r.score >= threshold);
+          const threshold = pluginConfig!.scoreThreshold;
+          const filtered = results.filter((r) => r.score >= threshold);
 
-        if (filtered.length === 0) {
-          log("retrieval", "no hits above threshold", {
+          if (filtered.length === 0) {
+            log("retrieval", "no hits above threshold", {
+              total: results.length,
+              threshold,
+              topScore: results[0]?.score,
+              topQuestion: results[0]?.chain.userIntent,
+            });
+            return;
+          }
+
+          const graphsMap = processor!.getGraphs();
+
+          const hits = filtered.map((result) => {
+            let graphEntry: GraphEntry | undefined;
+            for (const [chainId, g] of graphsMap.entries()) {
+              const intentNode = g.nodes.find((n: GraphNode) => n.type === "Intent");
+              if (intentNode?.properties?.taskId === result.chain.taskId) {
+                graphEntry = { chainId, nodes: g.nodes, rels: g.rels };
+                break;
+              }
+            }
+            return { result, graphEntry };
+          });
+
+          const bestHit = selectBestHit(hits);
+          const prompt = bestHit ? buildRetrievalPrompt([bestHit]) : "";
+
+          log("retrieval", "hits found", {
+            query: content,
+            hitCount: filtered.length,
             total: results.length,
             threshold,
-            topScore: results[0]?.score,
-            topQuestion: results[0]?.chain.userIntent,
+            prompt,
           });
-          return;
-        }
 
-        const storage: any = (processor as any).storage;
-        const graphsMap: Map<string, { nodes: GraphNode[]; rels: GraphRelationship[] }> =
-          (storage as any).graphs;
-
-        const hits = filtered.map((result) => {
-          let graphEntry: GraphEntry | undefined;
-          for (const [chainId, g] of graphsMap.entries()) {
-            const intentNode = g.nodes.find((n: GraphNode) => n.type === "Intent");
-            if (intentNode?.properties?.taskId === result.chain.taskId) {
-              graphEntry = { chainId, nodes: g.nodes, rels: g.rels };
-              break;
-            }
+          if (prompt) {
+            pendingRetrievalPrompt = prompt;
           }
-          return { result, graphEntry };
-        });
-
-        const bestHit = selectBestHit(hits);
-        const prompt = bestHit ? buildRetrievalPrompt([bestHit]) : "";
-
-        log("retrieval", "hits found", {
-          query: content,
-          hitCount: filtered.length,
-          total: results.length,
-          threshold,
-          prompt,
-        });
-
-        if (prompt) {
-          pendingRetrievalPrompt = prompt;
-          pendingOriginalText = content;
+        } catch (err: any) {
+          log("error", "retrieval failed", { error: String(err) });
         }
-      } catch (err: any) {
-        log("error", "retrieval failed", { error: String(err) });
-      }
+      })();
+
+      pendingRetrievalPromise = retrievalWork;
     });
 
     // ---- before_prompt_build: 将检索到的事件链注入 agent 上下文 ----
-    api.on("before_prompt_build", (_event: any) => {
+    api.on("before_prompt_build", async (_event: any) => {
+      if (pendingRetrievalPromise) {
+        await pendingRetrievalPromise;
+        pendingRetrievalPromise = null;
+      }
       if (pendingRetrievalPrompt) {
         const prompt = pendingRetrievalPrompt;
         pendingRetrievalPrompt = null;
@@ -659,19 +675,6 @@ export default definePluginEntry({
       return undefined;
     });
 
-    // ---- before_prompt_build: 将检索到的事件链注入原始消息之后 ---- 不生效？？
-    // api.on("before_prompt_build", (_event: any) => {
-    //   if (pendingRetrievalPrompt && pendingOriginalText) {
-    //     const combined = `${pendingOriginalText}\n${pendingRetrievalPrompt}`;
-    //     pendingRetrievalPrompt = null;
-    //     pendingOriginalText = null;
-    //     log("retrieval", "injecting prompt via before_prompt_build", {
-    //       length: combined.length,
-    //     });
-    //     return { replaceMessage: combined };
-    //   }
-    //   return undefined;
-    // });
 
     // ---- reply_dispatch ----
     api.on("reply_dispatch", (event: any) => {
@@ -696,24 +699,6 @@ export default definePluginEntry({
                 "RawBody": "今天的leetcode每日一题是什么？leetcode官网的",
           }
       */
-      if (pendingRetrievalPrompt) { // 有概率不触发？？
-        const injection = `\n[以下是与当前问题相关的历史执行记录，可参考其中的工具调用路径]\n${pendingRetrievalPrompt}`;
-        if (event?.ctx?.BodyForAgent) {
-          event.ctx.BodyForAgent += injection;
-        }
-        // if (event?.ctx?.Body) {
-        //   event.ctx.Body += injection;
-        // }
-        // if (event?.ctx?.BodyForCommands) {
-        //   event.ctx.BodyForCommands += injection;
-        // }
-        // if (event?.ctx?.RawBody) {
-        //   event.ctx.RawBody += injection;
-        // }
-      }
-      else {
-        log("agent_plan", "no prompt to inject at reply_dispatch")
-      }
 
       log("agent_plan", "reply_dispatch", {
         content: safeStr(event),
@@ -749,7 +734,7 @@ export default definePluginEntry({
       });
     });
 
-    // ---- agent_end: 建图 + 导出事件链和图谱 ----
+    // ---- agent_end: 建图 + 后台导出/评估（不阻塞主流程） ----
     api.on("agent_end", async (event: any, ctx: any) => {
       if (isEvaluating) return;
       rememberLatestQuestionForEvent(event);
@@ -791,51 +776,59 @@ export default definePluginEntry({
         await processor.onAgentEnd(agentEndEvent);
 
         const saved = processor.getLastSavedGraph();
-        if (saved) {
-          if (!DEBUG) {
-            exportEventChainData(saved.chain, pluginConfig!);
-            exportGraphData(saved.chainId, saved.nodes, saved.rels, pluginConfig!);
-          }
-
-          const outcomeNode = saved.nodes.find((n) => n.type === "Outcome");
-          const userQuestion = saved.chain.userIntent;
-          const finalAnswer = outcomeNode?.properties?.fullText ?? "";
-          isEvaluating = true;
-          let evalScore: number | null = null;
-          try {
-            evalScore = await evaluateWithLlm(
-              userQuestion,
-              finalAnswer,
-              pluginConfig!,
-              api,
-              ctx,
-            );
-          } finally {
-            isEvaluating = false;
-          }
-
-          if (evalScore !== null && outcomeNode) {
-            outcomeNode.properties.evalScore = evalScore;
-            if (!DEBUG) {
-              const storage: any = (processor as any).storage;
-              await storage.saveGraph(saved.chainId, saved.nodes, saved.rels);
-            }
-          }
-
-          log("llm_eval_result", "LLM evaluation score", {
-            chainId: saved.chainId,
-            score: evalScore,
-            userQuestion: userQuestion.slice(0, 200),
-            finalAnswer: String(finalAnswer).slice(0, 200),
-          });
-        }
-
-        log("graph_build", "agent_end graph built and exported", {
+        log("graph_build", "agent_end graph built", {
           taskId: resolvedRunId,
           chainId: saved?.chainId,
         });
 
         lastRunId = null;
+
+        // 后台执行：导出 + LLM 评估，不阻塞 agent_end 返回
+        if (saved) {
+          const capturedConfig = pluginConfig!;
+          const capturedProcessor = processor;
+          setImmediate(async () => {
+            try {
+              exportEventChainData(saved.chain, capturedConfig);
+              exportGraphData(saved.chainId, saved.nodes, saved.rels, capturedConfig);
+
+              const outcomeNode = saved.nodes.find((n) => n.type === "Outcome");
+              const userQuestion = saved.chain.userIntent;
+              const finalAnswer = outcomeNode?.properties?.fullText ?? "";
+              isEvaluating = true;
+              let evalScore: number | null = null;
+              try {
+                evalScore = await evaluateWithLlm(
+                  userQuestion,
+                  finalAnswer,
+                  capturedConfig,
+                  api,
+                  ctx,
+                );
+              } finally {
+                isEvaluating = false;
+              }
+
+              if (evalScore !== null && outcomeNode) {
+                outcomeNode.properties.evalScore = evalScore;
+                if (evalScore < capturedConfig.evalScoreThreshold) {
+                  await capturedProcessor.removeGraph(saved.chainId);
+                } else {
+                  await capturedProcessor.saveGraph(saved.chainId, saved.nodes, saved.rels);
+                }
+              }
+
+              log("llm_eval_result", "LLM evaluation score", {
+                chainId: saved.chainId,
+                score: evalScore,
+                userQuestion: userQuestion.slice(0, 200),
+                finalAnswer: String(finalAnswer).slice(0, 200),
+              });
+            } catch (err: any) {
+              log("error", "background eval/export failed", { error: String(err) });
+            }
+          });
+        }
       } catch (err: any) {
         log("error", "agent_end graph build failed", { error: String(err) });
       }

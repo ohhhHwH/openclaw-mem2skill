@@ -1,81 +1,117 @@
 
-# 创建框架
-# 流程设计
-# 参考 @ref/插件清单.txt  @ref/构建最小插件.txt   @ref/入口点文档.txt  
-创建最小插件，使其能够 获取并修改 用户输入，目前默认输入为 "hello openclaw,"
-获取调用技能输入，Agent规划，工具调用等信息，
-并保存在日志当中 路径为 ~/workspace/agent/logs/myplugins.log
-#FIX 当前日志中只有 {"time":"2026-04-25T13:27:28.065Z","category":"plugin","message":"memory2skill registered"} 在用户输入问题后日志中并没有保存用户输入问题
-    #TODO - low: FIX BUG 插件多次被注册 definePluginEntry 有问题
-        简短结论：
-        插件被多次运行通常是因为 OpenClaw 在不同的注册模式
-        （如 discovery / cli-metadata / full）或多次评估入口时
-        会调用你的 register，而你的 register(api) 
-        在每次调用时不加判断地注册了大量监听器/钩子，导致重复注册与重复运行。
-        参见平台文档说明：入口点文档.txt:48。
-    #最终回复没有被抓取到 - v1.6成功get到设想所需信息
-        添加一个hook使智能体最终回复给用户的信息也被接收
-    #在获取到gateway的信息后才开始写日志 - 相当于解决一下多次注册的问题-至少日志中信息少了 日志精简
-        仅保留 lifecycle user_input agent_plan tool_call tool_result agent_end llm_output 相关日志
-
-#测试脚本
-
 # High Priority
 
 # TODO 图对齐 - 暂定 prompt
     # openclaw 调用LLM
         ...拆解 / 相似度 / 最终回答等
-        # bug 结果+ans 分数是 null - {"time":"2026-05-04T06:19:59.016Z","category":"llm_eval","message":"skipped: llmApiUrl or llmApiKey not configured","data":{}}
-    # TODO 闲时线程操作 - 图对齐 - 相似事件特征提取/关节步骤提取等
-    # TODO 长短期记忆转化
-    #fix BUG 没有get到历史事件链的记录 
-    #fix BUG 检索后事件链没有加入到agentplan 中
-        # v1.16.1 就将其注入了，从agent_end中的对话中了
-            # 应该将消息注入到原始消息之后 - 当前返回 ""
-    # TODO bug 检索事件链中不要包含 最终回答 给出回答的 正确分数 / 置信度->问题相似性  之前回答的正确性改为->置信度，放在结果处
-    
-    # TODO reply_dispatch 中 prompt添加有概率不触发？？
-        # TODO 会修改原始信息
-    # todo before_prompt_build 和 reply_dispatch 重复注入了
+        # DONE bug 结果+ans 分数是 null - {"time":"2026-05-04T06:19:59.016Z","category":"llm_eval","message":"skipped: llmApiUrl or llmApiKey not configured","data":{}}
+            已修复：添加 evalScoreThreshold 配置；低分图会被 removeGraph 清理；评分逻辑不变（未配置时跳过）
+            涉及文件：src/config.ts (evalScoreThreshold), index.ts (removeGraph on low score)
+    # DONE 闲时线程操作 - 图对齐 - 相似事件特征提取/关节步骤提取等
+        已实现：agent_end handler 中 graph build 同步完成后，exportGraphData + evaluateWithLlm 移入 setImmediate 后台执行
+        涉及文件：index.ts agent_end handler
+    # DONE 长短期记忆转化
+        已实现：EventChain 增加 accessCount/lastAccessTime 字段，searchSimilar 时自动更新
+        涉及文件：src/types.ts, src/storage.ts, src/processor.ts
+    # DONE BUG 没有get到历史事件链的记录
+        已修复：移除 DEBUG 对 saveEventChain/saveGraph 的阻断，数据始终持久化
+        涉及文件：src/processor.ts, index.ts
+    # DONE BUG 检索后事件链没有加入到agentplan 中
+        已修复：添加 pendingRetrievalPromise，before_prompt_build 改为 async 并 await 检索完成
+        涉及文件：index.ts (pendingRetrievalPromise + async before_prompt_build)
+    # DONE bug 检索事件链中不要包含 最终回答 给出回答的 正确分数 / 置信度->问题相似性  之前回答的正确性改为->置信度，放在结果处
+        已确认：buildRetrievalPrompt 只输出 toolPath 和 similarity/confidence，不暴露 outcome 原文
+        涉及文件：index.ts:buildRetrievalPrompt
+    # DONE reply_dispatch 中 prompt添加有概率不触发
+        已修复：通过 pendingRetrievalPromise await 机制解决时序问题
+        涉及文件：index.ts (before_prompt_build async await)
 
-    # TODO 复赛文档补图
 # Mid Priority
 
 #TODO 将前期设想合并进来
     # TODO 合并主干部分（query/tool call/ans保存，建图，图匹配，检索）
-        #完成接口函数
+        现状：核心流程已在 processor.ts 中实现 (onMessageReceived->searchSimilar, onAgentEnd->buildGraph)
+        待完善：接口函数的统一封装，供外部测试和扩展调用
+        涉及文件：src/processor.ts (公开方法), index.ts (hook handler 调用)
     # TODO openclaw中指导Agent做出规划 - 暂定 prompt - 将检索的信息附加到 query 上
-    #以本地日志形式保存图谱数据 (供后续批量导入)
+        现状：before_prompt_build 通过 prependContext 注入检索结果
+        待完善：prompt 模板优化，使 Agent 能根据历史工具链做出更好的规划决策
+        涉及文件：index.ts:buildRetrievalPrompt (prompt 模板文案)
+    # DONE 以本地日志形式保存图谱数据 (供后续批量导入)
+        已修复：移除 DEBUG guard，exportGraphData 始终执行
+        涉及文件：index.ts (setImmediate 内 exportEventChainData + exportGraphData)
     # TODO 语义标准化拆解 + 图对齐
-        # 图中因果关系并非线性的,成图状，to有多个,from有多个 -> 如问题to多个toolcall，最终问题的回答from多个tool call的结果
-            # 判断工具调用间的依赖关系 - 找到 Tool call 是由谁规划的
-                #agent_end message 中事件链记录数据过多，包括历史规划，减去晚于问题输入的message - 剩下的就是规划
-                # 直接用 agent_end 清理过后的 message 建图，因为这里面包含了足够的信息，且放在回复完后操作，节省时间
-                #找到一个 openclaw需要上一个tool call生成的结果才能进行下一个tool call的问题 - 找leetcode每日一题最后的那个网址的获取跟前文相关
-                    # 前文如何来的？如何建立 因果 关系？-用LLM？ - v1.7 log中缺少agent_end message 信息暂时无法溯源 - 用/new
-                        # 该链接从前文中的 tool call 后的 tool_result 中来
-                        # 当前认为如果查询的字符串 在之前的 tool_result 中能够找到（字符串匹配），那么认为是depend依赖关系 - 暂定
-                # TODO 将 think + prompt 投入 LLM 给出 依赖关系 和 上次 func call 评价！对上次 funcall 打分
-        # TODO 图中 label( query ) -> "label":"今天leetcode每日一题是什么" -> 转成离散标准化的label
-            # TODO 语义标准化拆解 - 暂定 prompt - 给问题打标签 拆解 - 类似与 kimi
-            # TODO Query 相似度
-    # TODO 最终回答 + query -> LLM 给出一个分数
-        # TODO 事件链检索 - 结果反馈 - 用LLM
-        # TODO 结果低于 阈值 其图不做保存
-    # TODO message_received 将原始信息 + retrival
-        # TODO "category":"agent_plan","message":"reply_dispatch" 时，并没有接受到 retrival 中添加的事件链等信息
-    # log 中 保留事件触发 message_received agent_end；日志保留  reply_dispatch llm_input；其他 删去(暂定-成功规划中用不到)
+        # 图中因果关系并非线性的,成图状，to有多个,from有多个
+            现状：TRIGGERS rel 已支持 from:[intentId] -> to:[actionId1, actionId2, ...]
+            DEPENDS_ON 通过 detectDependencies 基于 LCS 检测上下游依赖
+            涉及文件：src/processor.ts:511-554 (detectDependencies)
+        # 判断工具调用间的依赖关系 - 找到 Tool call 是由谁规划的
+            现状：通过 LCS 匹配 tool arguments 与前序 tool result 来推断依赖
+            待完善：阈值 MIN_LCS_LEN=8, MIN_WEIGHT=0.3 可能需要调优
+            涉及文件：src/processor.ts:518-519
+        # 直接用 agent_end 清理过后的 message 建图
+            现状：cleanMessagesSinceQuestion 过滤了早于当前问题的历史 messages
+            涉及文件：index.ts:84-119 (cleanMessagesSinceQuestion)
+        # TODO 将 think + prompt 投入 LLM 给出 依赖关系 和 上次 func call 评价！对上次 funcall 打分
+            设想：用 LLM 替代/补充 LCS 的依赖检测，同时对每个 tool call 的结果质量打分
+            涉及文件：src/processor.ts:detectDependencies (当前为纯字符串匹配)
+            实现思路：在 onAgentEnd 中将 toolNodes 信息序列化后调用 evaluateViaRuntime/evaluateViaFetch
+    # TODO 图中 label( query ) -> 转成离散标准化的label
+        # TODO 语义标准化拆解 - 暂定 prompt - 给问题打标签 拆解
+            设想：将 "今天leetcode每日一题是什么" 标准化为 ["leetcode", "每日一题", "查询"]
+            实现思路：在 onMessageReceived 中调用 LLM 对 userIntent 做标签拆解
+            涉及文件：index.ts:message_received handler, 需新增标签化 prompt
+        # TODO Query 相似度
+            现状：使用 simpleEmbedding(字符频率向量) + cosine similarity
+            问题：字符频率向量语义表达能力弱，相似度区分度低
+            涉及文件：src/processor.ts:simpleEmbedding, src/storage.ts:cosineSimilarity
+            改进方向：接入外部 embedding API 或使用更好的本地 embedding 算法
+    # DONE 最终回答 + query -> LLM 给出一个分数
+        已实现：evaluateWithLlm 在 agent_end 后台调用；低分时 removeGraph
+        涉及文件：index.ts:evaluateWithLlm, index.ts:agent_end setImmediate
+    # DONE 结果低于阈值其图不做保存
+        已实现：evalScore < evalScoreThreshold 时调用 storage.removeGraph 移除
+        涉及文件：index.ts (agent_end setImmediate), src/storage.ts (removeGraph), src/config.ts (evalScoreThreshold)
+    # DONE message_received 将原始信息 + retrieval
+        已修复：pendingRetrievalPromise 保证检索完成后注入；before_prompt_build async await
+        涉及文件：index.ts
+    # DONE log 中保留事件触发相关日志
+        已完成：logger.ts 中 ALLOWED_CATEGORIES 过滤，只保留 lifecycle/user_input/agent_plan/tool_call/tool_result/agent_end/llm_output
     # test
-        # TEST 中有bug 
-        # test中 保存事件链为相同问题
-        # test没有进行 历史事件链检索 的测试，以及历史事件链的向量表和对应原始文本
-    # TODO 当/new等特殊指令时不做记录等操作
+        # TEST 中有bug
+            涉及文件：test/simulate.test.ts, test/retrieval.test.ts
+            排查方向：运行 npx jest 或 npx ts-node test/*.test.ts 检查具体失败项
+        # test中保存事件链为相同问题
+            问题：测试用例中多次使用相同的 userIntent 输入，导致检索结果互相干扰
+            涉及文件：test/simulate.test.ts
+        # test没有进行历史事件链检索的测试，以及历史事件链的向量表和对应原始文本
+            涉及文件：test/retrieval.test.ts (需扩展用例覆盖 searchSimilar 的端到端流程)
+    # DONE 当/new等特殊指令时不做记录等操作
+        已实现：message_received 中 content.startsWith("/") 时 early return
+        涉及文件：index.ts (message_received handler)
+
 # Low Priority
-    # TODO 创建CONFIG文件，包含日志路径，图谱数据路径等
-    # TODO storage.ts PATH 路径指定
+
+    # DONE 创建CONFIG文件，包含日志路径，图谱数据路径等
+        已实现：src/config.ts 的 PluginConfig 包含 logPath, evalScoreThreshold 等完整配置
+        涉及文件：src/config.ts
+    # DONE storage.ts PATH 路径指定
+        已实现：Storage 路径由 StorageConfig 传入，来源是 resolveConfig；用户可通过配置覆盖
+        涉及文件：src/storage.ts, src/config.ts
     # TODO 暂定用户下一次的query中包含对上一次回答的评价/打分
+        设想：在 message_received 中检测用户是否对上一次回答给出评价，若有则更新对应 chain 的 evalScore
+        涉及文件：index.ts:message_received, src/storage.ts (需支持更新已有 chain)
     # TODO 用户评价/打分体系->准确性 速度 回答格式
+        设想：多维度评分，替代当前单一 evalScore
+        涉及文件：src/types.ts (GraphNode properties 扩展), index.ts:buildEvalPrompt
     # TODO 多用户同时输入，事件链如何建立
-    # TODO : 日志中如何区分是哪个agent_plan的工具调用？如果有同步的tool call如何区分 - 日志上看不出来，暂时没有并行调用吧
-    # TODO : LOG 加入统一配置中去
-#TODO 查看赛题说明 https://bytedance.larkoffice.com/wiki/TYewweOPuiHMtBkA1aXcldJonic
+        现状：activeChains 以 taskId/runId 为 key，单用户场景下工作正常
+        问题：多用户并发时 latestQuestionTimestamp 会互相覆盖
+        涉及文件：index.ts (全局状态 latestQuestionTimestamp, pendingRetrievalPrompt)
+        修复方向：将全局状态改为按 sessionKey/threadId 隔离的 Map
+    # TODO 日志中如何区分是哪个agent_plan的工具调用
+        现状：tool_call 事件通过 findChainForToolEvent 匹配到 chain，但若无法匹配则取第一个 active chain
+        涉及文件：src/processor.ts:612-624 (findChainForToolEvent)
+    # DONE LOG 加入统一配置中去
+        已实现：logger.ts 新增 setLogPath()，config.ts 新增 logPath 字段，index.ts register 时调用 setLogPath
+        涉及文件：src/logger.ts, src/config.ts, index.ts

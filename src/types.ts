@@ -20,6 +20,8 @@ export interface EventChain {
   toolSequence: string[];
   outcome: "success" | "failure" | "partial";
   embedding: number[];
+  accessCount: number;
+  lastAccessTime: number;
 }
 
 export type GraphNodeType = "Intent" | "Action" | "Context" | "Outcome";

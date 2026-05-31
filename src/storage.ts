@@ -77,7 +77,13 @@ export class Storage {
       results.push({ chain, score });
     }
     results.sort((a, b) => b.score - a.score);
-    return results.slice(0, topK);
+    const top = results.slice(0, topK);
+    const now = Date.now();
+    for (const r of top) {
+      r.chain.accessCount = (r.chain.accessCount || 0) + 1;
+      r.chain.lastAccessTime = now;
+    }
+    return top;
   }
 
   async saveGraph(
@@ -98,6 +104,11 @@ export class Storage {
       JSON.stringify(entry) + "\n",
       "utf-8"
     );
+  }
+
+  async removeGraph(chainId: string): Promise<void> {
+    this.graphs.delete(chainId);
+    this.chains.delete(chainId);
   }
 
   async queryByIntent(intentLabel: string): Promise<GraphNode[]> {
@@ -150,6 +161,8 @@ export class Storage {
           outcome: outcomeNode?.properties?.success === false ? "failure" : "success",
           events: [],
           embedding: simpleEmbedding(combinedText),
+          accessCount: 0,
+          lastAccessTime: 0,
         };
         this.chains.set(chain.id, chain);
       } catch {

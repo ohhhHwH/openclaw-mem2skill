@@ -10,6 +10,8 @@ export interface PluginConfig {
   llmApiUrl: string;
   llmApiKey: string;
   llmModel: string;
+  evalScoreThreshold: number;
+  logPath: string;
 }
 
 const DEFAULT_BASE_DIR = path.join(os.homedir(), "workspace", "agent", "logs", "mem2skill");
@@ -23,6 +25,8 @@ const defaults: PluginConfig = {
   llmApiUrl: "",
   llmApiKey: "",
   llmModel: "gpt-4o-mini",
+  evalScoreThreshold: 0.5,
+  logPath: path.join(os.homedir(), "workspace", "agent", "logs", "myplugins.log"),
 };
 
 export function resolveConfig(userConfig?: Record<string, any>): PluginConfig {
@@ -35,5 +39,7 @@ export function resolveConfig(userConfig?: Record<string, any>): PluginConfig {
     llmApiUrl: userConfig?.llmApiUrl ?? defaults.llmApiUrl,
     llmApiKey: userConfig?.llmApiKey ?? defaults.llmApiKey,
     llmModel: userConfig?.llmModel ?? defaults.llmModel,
+    evalScoreThreshold: userConfig?.evalScoreThreshold ?? defaults.evalScoreThreshold,
+    logPath: userConfig?.logPath ?? defaults.logPath,
   };
 }

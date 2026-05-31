@@ -8,7 +8,7 @@ import type {
   RetrievalResult,
   StorageConfig,
 } from "./types";
-export type { GraphNode };
+export type { GraphNode, GraphRelationship, EventChain, RetrievalResult };
 
 export function simpleEmbedding(text: string, dim: number = 64): number[] {
   const vec = new Array(dim).fill(0);
@@ -30,7 +30,6 @@ function parseDataContent(event: any): any {
 
 export class Processor {
   private storage: Storage;
-  private debug: boolean;
   private activeChains: Map<string, EventChain> = new Map();
   private pendingTaskId: string | null = null;
   private currentRunId: string | null = null;
@@ -55,7 +54,6 @@ export class Processor {
 
   constructor(config: StorageConfig & { debug?: boolean }) {
     this.storage = new Storage(config);
-    this.debug = config.debug ?? false;
   }
 
   async init(): Promise<void> {
@@ -80,6 +78,27 @@ export class Processor {
 
   getLastSavedGraph() {
     return this.lastSavedGraph;
+  }
+
+  getGraphs(): Map<string, { nodes: GraphNode[]; rels: GraphRelationship[] }> {
+    return (this.storage as any).graphs;
+  }
+
+  getChains(): Map<string, EventChain> {
+    return (this.storage as any).chains;
+  }
+
+  async searchSimilar(text: string, topK?: number): Promise<RetrievalResult[]> {
+    const embedding = simpleEmbedding(text);
+    return this.storage.searchSimilar(embedding, topK);
+  }
+
+  async removeGraph(chainId: string): Promise<void> {
+    return this.storage.removeGraph(chainId);
+  }
+
+  async saveGraph(chainId: string, nodes: GraphNode[], rels: GraphRelationship[]): Promise<void> {
+    return this.storage.saveGraph(chainId, nodes, rels);
   }
 
   async onMessageReceived(event: any): Promise<RetrievalResult[]> {
@@ -111,6 +130,8 @@ export class Processor {
       toolSequence: [],
       outcome: "partial",
       embedding,
+      accessCount: 0,
+      lastAccessTime: 0,
     };
     this.activeChains.set(taskId, chain);
     // 暂存为待绑定链，等下一条 reply_dispatch 把 runId 补上
@@ -164,6 +185,8 @@ export class Processor {
       toolSequence: [],
       outcome: "partial",
       embedding: simpleEmbedding(userText),
+      accessCount: 0,
+      lastAccessTime: 0,
     };
     this.activeChains.set(runId, chain);
     this.currentRunId = runId;
@@ -266,9 +289,7 @@ export class Processor {
       chain.userIntent + " " + chain.toolSequence.join(" ")
     );
 
-    if (!this.debug) {
-      await this.storage.saveEventChain(chain);
-    }
+    await this.storage.saveEventChain(chain);
     // --- 从 messages 中提取最终回复文本 ---
     const assistantTexts = this.extractAssistantTexts(messages);
     const answerText = assistantTexts.join("\n");
@@ -362,9 +383,7 @@ export class Processor {
       });
     }
 
-    if (!this.debug) {
-      await this.storage.saveGraph(chain.id, nodes, rels);
-    }
+    await this.storage.saveGraph(chain.id, nodes, rels);
 
     this.lastSavedGraph = { chainId: chain.id, chain, nodes, rels };
     this.activeChains.delete(chain.taskId);
@@ -437,9 +456,7 @@ export class Processor {
       });
     }
 
-    if (!this.debug) {
-      await this.storage.saveGraph(chain.id, nodes, rels);
-    }
+    await this.storage.saveGraph(chain.id, nodes, rels);
     this.pendingGraphData.delete(chain.taskId);
   }
 
