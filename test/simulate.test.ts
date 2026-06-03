@@ -4,7 +4,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { Processor } from "../src/processor";
+import { Processor, simpleEmbedding } from "../src/processor";
 import type {
   EventChain,
   GraphNode,
@@ -53,17 +53,6 @@ class Paths {
 
   // 嵌入维度需与 processor.ts 中保持一致，便于跨文件复用
   static readonly EMBEDDING_DIM = 64;
-}
-
-// 与 processor.ts 中的实现保持一致的字符级嵌入函数
-// 用于把图谱节点 label 单独再做一次向量化保存
-function simpleEmbedding(text: string, dim: number = Paths.EMBEDDING_DIM): number[] {
-  const vec = new Array(dim).fill(0);
-  for (let i = 0; i < text.length; i++) {
-    vec[i % dim] += text.charCodeAt(i);
-  }
-  const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
-  return vec.map((v) => v / norm);
 }
 
 // 把日志的 category 映射到 Processor 的具体处理函数

@@ -51,3 +51,25 @@ export interface StorageConfig {
   lanceDbPath: string;
   graphLogPath: string;
 }
+
+/** 多维度评分：准确性、速度、回答格式 */
+export interface EvalDimensions {
+  /** 准确性 0-1 */
+  accuracy: number;
+  /** 响应速度满意度 0-1 */
+  speed: number;
+  /** 回答格式/可读性 0-1 */
+  format: number;
+  /** 综合评分 0-1 */
+  overall: number;
+}
+
+/** 用户反馈解析结果 */
+export interface UserFeedback {
+  /** 反馈极性：positive/negative/neutral */
+  polarity: "positive" | "negative" | "neutral";
+  /** 反馈涉及维度 */
+  dimensions: Array<keyof EvalDimensions>;
+  /** 置信度 0-1 */
+  confidence: number;
+}

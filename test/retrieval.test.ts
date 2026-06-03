@@ -9,6 +9,8 @@ import type {
   GraphNode,
   GraphRelationship,
 } from "../src/types";
+import { simpleEmbedding } from "../src/processor";
+import { cosineSimilarity } from "../src/storage";
 
 const CURRENT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,31 +21,7 @@ const GRAPH_JSONL_PATH = path.resolve(
   "graph.jsonl"
 );
 
-const EMBEDDING_DIM = 64;
 const SCORE_THRESHOLD = 0.8;
-
-function simpleEmbedding(text: string, dim: number = EMBEDDING_DIM): number[] {
-  const vec = new Array(dim).fill(0);
-  for (let i = 0; i < text.length; i++) {
-    vec[i % dim] += text.charCodeAt(i);
-  }
-  const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
-  return vec.map((v) => v / norm);
-}
-
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0;
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
-}
 
 interface GraphEntry {
   chainId: string;

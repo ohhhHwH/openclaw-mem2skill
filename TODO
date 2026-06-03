@@ -1,7 +1,7 @@
 
 # High Priority
 
-# TODO 图对齐 - 暂定 prompt
+# 图对齐 - 暂定 prompt
     # openclaw 调用LLM
         ...拆解 / 相似度 / 最终回答等
         # DONE bug 结果+ans 分数是 null - {"time":"2026-05-04T06:19:59.016Z","category":"llm_eval","message":"skipped: llmApiUrl or llmApiKey not configured","data":{}}
@@ -28,19 +28,17 @@
 
 # Mid Priority
 
-#TODO 将前期设想合并进来
-    # TODO 合并主干部分（query/tool call/ans保存，建图，图匹配，检索）
-        现状：核心流程已在 processor.ts 中实现 (onMessageReceived->searchSimilar, onAgentEnd->buildGraph)
-        待完善：接口函数的统一封装，供外部测试和扩展调用
-        涉及文件：src/processor.ts (公开方法), index.ts (hook handler 调用)
-    # TODO openclaw中指导Agent做出规划 - 暂定 prompt - 将检索的信息附加到 query 上
-        现状：before_prompt_build 通过 prependContext 注入检索结果
-        待完善：prompt 模板优化，使 Agent 能根据历史工具链做出更好的规划决策
+# DONE 将前期设想合并进来
+    # DONE 合并主干部分（query/tool call/ans保存，建图，图匹配，检索）
+        已实现：Processor 新增 processQuery() 和 buildKnowledgeGraph() 统一 API；test/index.test.ts 重写为测试 event-hook 架构
+        涉及文件：src/processor.ts (processQuery, buildKnowledgeGraph), test/index.test.ts (全量重写)
+    # DONE openclaw中指导Agent做出规划 - 暂定 prompt - 将检索的信息附加到 query 上
+        已实现：buildRetrievalPrompt 优化：百分比化相似度/置信度，新增分层决策建议（高/中/低匹配三档），移除冗余的"以下是用户提出的原始问题"尾句
         涉及文件：index.ts:buildRetrievalPrompt (prompt 模板文案)
     # DONE 以本地日志形式保存图谱数据 (供后续批量导入)
         已修复：移除 DEBUG guard，exportGraphData 始终执行
         涉及文件：index.ts (setImmediate 内 exportEventChainData + exportGraphData)
-    # TODO 语义标准化拆解 + 图对齐
+    # DONE 语义标准化拆解 + 图对齐
         # 图中因果关系并非线性的,成图状，to有多个,from有多个
             现状：TRIGGERS rel 已支持 from:[intentId] -> to:[actionId1, actionId2, ...]
             DEPENDS_ON 通过 detectDependencies 基于 LCS 检测上下游依赖
@@ -52,20 +50,16 @@
         # 直接用 agent_end 清理过后的 message 建图
             现状：cleanMessagesSinceQuestion 过滤了早于当前问题的历史 messages
             涉及文件：index.ts:84-119 (cleanMessagesSinceQuestion)
-        # TODO 将 think + prompt 投入 LLM 给出 依赖关系 和 上次 func call 评价！对上次 funcall 打分
-            设想：用 LLM 替代/补充 LCS 的依赖检测，同时对每个 tool call 的结果质量打分
-            涉及文件：src/processor.ts:detectDependencies (当前为纯字符串匹配)
-            实现思路：在 onAgentEnd 中将 toolNodes 信息序列化后调用 evaluateViaRuntime/evaluateViaFetch
-    # TODO 图中 label( query ) -> 转成离散标准化的label
-        # TODO 语义标准化拆解 - 暂定 prompt - 给问题打标签 拆解
-            设想：将 "今天leetcode每日一题是什么" 标准化为 ["leetcode", "每日一题", "查询"]
-            实现思路：在 onMessageReceived 中调用 LLM 对 userIntent 做标签拆解
-            涉及文件：index.ts:message_received handler, 需新增标签化 prompt
-        # TODO Query 相似度
-            现状：使用 simpleEmbedding(字符频率向量) + cosine similarity
-            问题：字符频率向量语义表达能力弱，相似度区分度低
-            涉及文件：src/processor.ts:simpleEmbedding, src/storage.ts:cosineSimilarity
-            改进方向：接入外部 embedding API 或使用更好的本地 embedding 算法
+        # DONE 将 think + prompt 投入 LLM 给出 依赖关系 和 上次 func call 评价！对上次 funcall 打分
+            已实现：Processor 新增 scoreToolCallQuality（启发式质量分）、buildLlmDependencyPrompt（LLM prompt 构建）、parseLlmDependencyResponse（LLM 回复解析）、applyLlmDependencies（LLM 依赖写入图谱）；index.ts 新增 detectDependenciesWithLlm（并行运行于 agent_end 后台任务）；Action 节点新增 qualityScore 属性；32/32 测试通过
+            涉及文件：src/processor.ts (scoreToolCallQuality, buildLlmDependencyPrompt, parseLlmDependencyResponse, applyLlmDependencies), index.ts (detectDependenciesWithLlm + agent_end 并行调用)
+    # DONE 图中 label( query ) -> 转成离散标准化的label
+        # DONE 语义标准化拆解 - 暂定 prompt - 给问题打标签 拆解
+            已实现：buildLabelDecompositionPrompt（LLM 标签拆解 prompt）、parseLabelDecompositionResponse（解析 LLM 回复）；agent_end 后台并行调用标签拆解，结果写入 Intent 节点 labels 属性
+            涉及文件：src/processor.ts (buildLabelDecompositionPrompt, parseLabelDecompositionResponse), index.ts (agent_end 后台并行标签拆解)
+        # DONE Query 相似度
+            已实现：simpleEmbedding 改进为 bigram 加权编码（单字符 0.6x + bigram 1.0x），提升中文词汇级语义区分度；新增 enhanceEmbeddingWithLabels（标签增强 embedding）；Processor 新增 saveChain 公开方法以持久化增强后的 chain
+            涉及文件：src/processor.ts:simpleEmbedding, src/processor.ts:enhanceEmbeddingWithLabels, index.ts (agent_end label 增强 + saveChain 持久化)
     # DONE 最终回答 + query -> LLM 给出一个分数
         已实现：evaluateWithLlm 在 agent_end 后台调用；低分时 removeGraph
         涉及文件：index.ts:evaluateWithLlm, index.ts:agent_end setImmediate
@@ -78,14 +72,15 @@
     # DONE log 中保留事件触发相关日志
         已完成：logger.ts 中 ALLOWED_CATEGORIES 过滤，只保留 lifecycle/user_input/agent_plan/tool_call/tool_result/agent_end/llm_output
     # test
-        # TEST 中有bug
+        # DONE TEST 中有bug
+        已修复：index.test.ts 全量重写，从旧的 tool-registration 测试改为 event-hook 架构测试，32/32 测试通过
+        涉及文件：test/index.test.ts
+        # DONE test中保存事件链为相同问题
+            已修复：simulate.test.ts 和 retrieval.test.ts 移除本地重复定义的 simpleEmbedding/cosineSimilarity，统一从 src/processor.ts 和 src/storage.ts 导入；storage.ts 导出 cosineSimilarity；确保测试与实现使用同一份 embedding 算法，消除向量不匹配导致的检索干扰
+            涉及文件：test/simulate.test.ts, test/retrieval.test.ts, src/storage.ts (export cosineSimilarity)
+        # DONE test没有进行历史事件链检索的测试，以及历史事件链的向量表和对应原始文本
+            已实现：simulate.test.ts 第435-491行和 retrieval.test.ts 已覆盖 searchSimilar 端到端流程，32/32 测试通过
             涉及文件：test/simulate.test.ts, test/retrieval.test.ts
-            排查方向：运行 npx jest 或 npx ts-node test/*.test.ts 检查具体失败项
-        # test中保存事件链为相同问题
-            问题：测试用例中多次使用相同的 userIntent 输入，导致检索结果互相干扰
-            涉及文件：test/simulate.test.ts
-        # test没有进行历史事件链检索的测试，以及历史事件链的向量表和对应原始文本
-            涉及文件：test/retrieval.test.ts (需扩展用例覆盖 searchSimilar 的端到端流程)
     # DONE 当/new等特殊指令时不做记录等操作
         已实现：message_received 中 content.startsWith("/") 时 early return
         涉及文件：index.ts (message_received handler)
@@ -98,20 +93,18 @@
     # DONE storage.ts PATH 路径指定
         已实现：Storage 路径由 StorageConfig 传入，来源是 resolveConfig；用户可通过配置覆盖
         涉及文件：src/storage.ts, src/config.ts
-    # TODO 暂定用户下一次的query中包含对上一次回答的评价/打分
-        设想：在 message_received 中检测用户是否对上一次回答给出评价，若有则更新对应 chain 的 evalScore
-        涉及文件：index.ts:message_received, src/storage.ts (需支持更新已有 chain)
-    # TODO 用户评价/打分体系->准确性 速度 回答格式
-        设想：多维度评分，替代当前单一 evalScore
-        涉及文件：src/types.ts (GraphNode properties 扩展), index.ts:buildEvalPrompt
-    # TODO 多用户同时输入，事件链如何建立
-        现状：activeChains 以 taskId/runId 为 key，单用户场景下工作正常
-        问题：多用户并发时 latestQuestionTimestamp 会互相覆盖
-        涉及文件：index.ts (全局状态 latestQuestionTimestamp, pendingRetrievalPrompt)
-        修复方向：将全局状态改为按 sessionKey/threadId 隔离的 Map
-    # TODO 日志中如何区分是哪个agent_plan的工具调用
-        现状：tool_call 事件通过 findChainForToolEvent 匹配到 chain，但若无法匹配则取第一个 active chain
-        涉及文件：src/processor.ts:612-624 (findChainForToolEvent)
+    # DONE 暂定用户下一次的query中包含对上一次回答的评价/打分
+        已实现：detectUserFeedback（关键词+启发式检测用户消息中的评价信号）、applyFeedbackToScores（根据反馈极性更新多维度评分）；message_received 中集成反馈检测，检测到评价后异步更新对应 chain 的图谱评分
+        涉及文件：src/processor.ts (detectUserFeedback, applyFeedbackToScores), src/types.ts (UserFeedback, EvalDimensions), index.ts:message_received
+    # DONE 用户评价/打分体系->准确性 速度 回答格式
+        已实现：EvalDimensions 类型定义（accuracy/speed/format/overall）；buildEvalPrompt 更新为多维度 JSON 评分格式；parseEvalScore 更新为优先解析 JSON 多维度评分；Outcome 节点新增 evalDimensions + userFeedback 属性
+        涉及文件：src/types.ts (EvalDimensions), index.ts:buildEvalPrompt, index.ts:parseEvalScore
+    # DONE 多用户同时输入，事件链如何建立
+        已实现：引入 sessionState Map（按 sessionKey/threadId 隔离），包含 lastRunId、pendingRetrievalPrompt、pendingRetrievalPromise、isEvaluating；getOrCreateSessionState 自动为每个会话创建独立状态；message_received/agent_end/llm_output/before_prompt_build/reply_dispatch 全部使用会话隔离状态
+        涉及文件：index.ts (sessionState Map, getOrCreateSessionState, 各 handler 引用更新)
+    # DONE 日志中如何区分是哪个agent_plan的工具调用
+        已实现：新增 runIdToChainKey 反向索引（Map<runId, chainKey>），findChainForToolEvent 增加 runId 优先级匹配（taskId → runId → currentRunId）；registerRunId 在 reply_dispatch 三处绑定点注册映射；多链场景下工具调用能精确匹配到所属 agent_plan
+        涉及文件：src/processor.ts (runIdToChainKey, findChainForToolEvent 增强, registerRunId)
     # DONE LOG 加入统一配置中去
         已实现：logger.ts 新增 setLogPath()，config.ts 新增 logPath 字段，index.ts register 时调用 setLogPath
         涉及文件：src/logger.ts, src/config.ts, index.ts

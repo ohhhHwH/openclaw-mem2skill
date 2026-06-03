@@ -1,128 +1,198 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// Mock openclaw plugin entry - just passes through
 vi.mock("openclaw/plugin-sdk/plugin-entry", () => ({
   definePluginEntry: (entry: any) => entry,
 }));
 
+// Mock logger
 vi.mock("../src/logger", () => ({
   log: vi.fn(),
+  setLogPath: vi.fn(),
 }));
 
-import pluginEntry from "../index";
-import { log } from "../src/logger";
+// Mock processor to avoid filesystem side effects
+vi.mock("../src/processor", () => {
+  return {
+    simpleEmbedding: (text: string, dim?: number) => {
+      const d = dim ?? 64;
+      const vec = new Array(d).fill(0);
+      for (let i = 0; i < text.length; i++) vec[i % d] += text.charCodeAt(i);
+      const norm = Math.sqrt(vec.reduce((s: number, v: number) => s + v * v, 0)) || 1;
+      return vec.map((v: number) => v / norm);
+    },
+    enhanceEmbeddingWithLabels: (embedding: number[], _labels: string[]) => embedding,
+    buildLlmDependencyPrompt: () => "",
+    parseLlmDependencyResponse: () => null,
+    buildLabelDecompositionPrompt: () => "",
+    parseLabelDecompositionResponse: () => [],
+    scoreToolCallQuality: () => 0.5,
+    detectUserFeedback: () => null,
+    applyFeedbackToScores: (scores: any) => scores,
+    Processor: vi.fn().mockImplementation(function (this: any) {
+      this.init = vi.fn().mockResolvedValue(undefined);
+      this.close = vi.fn().mockResolvedValue(undefined);
+      this.onMessageReceived = vi.fn().mockResolvedValue([]);
+      this.onReplyDispatch = vi.fn();
+      this.onBeforeToolCall = vi.fn();
+      this.onAfterToolCall = vi.fn();
+      this.onAgentEnd = vi.fn().mockResolvedValue(undefined);
+      this.onLlmOutput = vi.fn().mockResolvedValue(undefined);
+      this.searchSimilar = vi.fn().mockResolvedValue([]);
+      this.getGraphs = vi.fn().mockReturnValue(new Map());
+      this.getLastSavedGraph = vi.fn().mockReturnValue(null);
+      this.removeGraph = vi.fn().mockResolvedValue(undefined);
+      this.saveGraph = vi.fn().mockResolvedValue(undefined);
+      this.saveChain = vi.fn().mockResolvedValue(undefined);
+      this.applyLlmDependencies = vi.fn().mockReturnValue([]);
+      this.queryByIntent = vi.fn().mockResolvedValue([]);
+      this.processQuery = vi.fn().mockResolvedValue({ chain: {}, similar: [] });
+      this.buildKnowledgeGraph = vi.fn().mockResolvedValue({ chain: {}, nodes: [], rels: [] });
+    }),
+  };
+});
 
-interface ToolDefinition {
-  name: string;
-  description: string;
-  parameters: any;
-  execute(id: string, params: any): Promise<{ content: { type: string; text: string }[] }>;
-}
+import pluginEntry from "../index";
+import { log, setLogPath } from "../src/logger";
 
 describe("memory2skill plugin", () => {
-  const tools: ToolDefinition[] = [];
+  // Collect registered hooks
+  let hooks: Map<string, Function[]>;
+
+  function createMockApi() {
+    hooks = new Map();
+    return {
+      registrationMode: "full",
+      config: {},
+      on: vi.fn((event: string, handler: Function) => {
+        if (!hooks.has(event)) hooks.set(event, []);
+        hooks.get(event)!.push(handler);
+      }),
+      registerTool: vi.fn(),
+    };
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tools.length = 0;
-
-    const fakeApi = {
-      registerTool: (tool: ToolDefinition) => tools.push(tool),
-    };
-    pluginEntry.register(fakeApi as any);
   });
 
-  it("should have correct plugin metadata", () => {
-    expect(pluginEntry.id).toBe("memory2skill");
-    expect(pluginEntry.name).toBe("Memory to Skill");
-  });
-
-  it("should register 5 tools", () => {
-    expect(tools).toHaveLength(5);
-  });
-
-  it("should register tools with expected names", () => {
-    const names = tools.map((t) => t.name);
-    expect(names).toEqual([
-      "mem2skill_transform_input",
-      "mem2skill_log_input",
-      "mem2skill_log_plan",
-      "mem2skill_log_skill",
-      "mem2skill_log_tool",
-    ]);
-  });
-
-  describe("mem2skill_transform_input", () => {
-    it("should prepend default prefix", async () => {
-      const tool = tools.find((t) => t.name === "mem2skill_transform_input")!;
-      const result = await tool.execute("test-id", { input: "world" });
-      expect(result.content[0].text).toBe("hello openclaw, world");
+  describe("plugin metadata", () => {
+    it("should have correct plugin metadata", () => {
+      expect(pluginEntry.id).toBe("memory2skill");
+      expect(pluginEntry.name).toBe("Memory to Skill");
+      expect(pluginEntry.description).toContain("Captures");
     });
 
-    it("should use custom prefix when provided", async () => {
-      const tool = tools.find((t) => t.name === "mem2skill_transform_input")!;
-      const result = await tool.execute("test-id", { input: "world", prefix: "hi," });
-      expect(result.content[0].text).toBe("hi, world");
-    });
-
-    it("should call log", async () => {
-      const tool = tools.find((t) => t.name === "mem2skill_transform_input")!;
-      await tool.execute("test-id", { input: "world" });
-      expect(log).toHaveBeenCalledWith("user_input", "Input transformed", {
-        original: "world",
-        transformed: "hello openclaw, world",
-      });
+    it("should export a register function", () => {
+      expect(typeof pluginEntry.register).toBe("function");
     });
   });
 
-  describe("mem2skill_log_input", () => {
-    it("should return 'logged'", async () => {
-      const tool = tools.find((t) => t.name === "mem2skill_log_input")!;
-      const result = await tool.execute("id", { content: "test msg" });
-      expect(result.content[0].text).toBe("logged");
-      expect(log).toHaveBeenCalledWith("user_input", "test msg", { taskId: undefined });
+  describe("plugin registration (full mode)", () => {
+    let api: ReturnType<typeof createMockApi>;
+
+    beforeEach(() => {
+      api = createMockApi();
+      pluginEntry.register(api as any);
+    });
+
+    it("should set up message_received hook", () => {
+      expect(api.on).toHaveBeenCalledWith("message_received", expect.any(Function));
+    });
+
+    it("should set up before_prompt_build hook", () => {
+      expect(api.on).toHaveBeenCalledWith("before_prompt_build", expect.any(Function));
+    });
+
+    it("should set up reply_dispatch hook", () => {
+      expect(api.on).toHaveBeenCalledWith("reply_dispatch", expect.any(Function));
+    });
+
+    it("should set up agent_end hook", () => {
+      expect(api.on).toHaveBeenCalledWith("agent_end", expect.any(Function));
+    });
+
+    it("should set up llm_output hook", () => {
+      expect(api.on).toHaveBeenCalledWith("llm_output", expect.any(Function));
+    });
+
+    it("should set up gateway_start hook", () => {
+      expect(api.on).toHaveBeenCalledWith("gateway_start", expect.any(Function));
+    });
+
+    it("should set up llm_input hook", () => {
+      expect(api.on).toHaveBeenCalledWith("llm_input", expect.any(Function));
+    });
+
+    it("should set log path from config", () => {
+      expect(setLogPath).toHaveBeenCalled();
+    });
+
+    it("should log registration lifecycle", () => {
+      expect(log).toHaveBeenCalledWith(
+        "lifecycle",
+        expect.stringContaining("registered"),
+        expect.any(Object),
+      );
     });
   });
 
-  describe("mem2skill_log_plan", () => {
-    it("should log plan with steps", async () => {
-      const tool = tools.find((t) => t.name === "mem2skill_log_plan")!;
-      const result = await tool.execute("id", {
-        planId: "p1",
-        steps: ["step1", "step2"],
-        reasoning: "because",
-      });
-      expect(result.content[0].text).toBe("plan logged");
-      expect(log).toHaveBeenCalledWith("agent_plan", "Plan p1", {
-        steps: ["step1", "step2"],
-        reasoning: "because",
-      });
+  describe("plugin registration (non-full mode)", () => {
+    it("should not set up hooks in non-full registration mode", () => {
+      const api = createMockApi();
+      api.registrationMode = "partial";
+      pluginEntry.register(api as any);
+      // Only lifecycle log should be called, not hooks
+      expect(api.on).not.toHaveBeenCalled();
     });
   });
 
-  describe("mem2skill_log_skill", () => {
-    it("should log skill invocation", async () => {
-      const tool = tools.find((t) => t.name === "mem2skill_log_skill")!;
-      const result = await tool.execute("id", { skillName: "mySkill", args: "a=1" });
-      expect(result.content[0].text).toBe("skill logged");
-      expect(log).toHaveBeenCalledWith("skill_invoke", "Skill: mySkill", { args: "a=1" });
+  describe("message_received handler", () => {
+    it("should skip commands starting with /", async () => {
+      const api = createMockApi();
+      pluginEntry.register(api as any);
+
+      const handler = hooks.get("message_received")?.[0];
+      expect(handler).toBeDefined();
+
+      await handler!("/new");
+      // Should return early without processing
+      expect(log).toHaveBeenCalledWith(
+        "user_input",
+        "message_received",
+        expect.objectContaining({ original: "/new" }),
+      );
+    });
+
+    it("should prepend default prefix and log", async () => {
+      const api = createMockApi();
+      pluginEntry.register(api as any);
+
+      const handler = hooks.get("message_received")?.[0];
+      expect(handler).toBeDefined();
+
+      await handler!("hello world");
+      expect(log).toHaveBeenCalledWith(
+        "user_input",
+        "message_received",
+        expect.objectContaining({
+          original: "hello world",
+          transformed: "hello openclaw, hello world",
+        }),
+      );
     });
   });
 
-  describe("mem2skill_log_tool", () => {
-    it("should log tool call", async () => {
-      const tool = tools.find((t) => t.name === "mem2skill_log_tool")!;
-      const result = await tool.execute("id", {
-        toolName: "grep",
-        parameters: "pattern",
-        result: "found",
-        success: true,
-      });
-      expect(result.content[0].text).toBe("tool call logged");
-      expect(log).toHaveBeenCalledWith("tool_call", "Tool: grep", {
-        parameters: "pattern",
-        result: "found",
-        success: true,
-      });
+  describe("before_prompt_build handler", () => {
+    it("should return undefined when no pending prompt", async () => {
+      const api = createMockApi();
+      pluginEntry.register(api as any);
+
+      const handler = hooks.get("before_prompt_build")?.[0];
+      expect(handler).toBeDefined();
+
+      const result = await handler!({});
+      expect(result).toBeUndefined();
     });
   });
 });

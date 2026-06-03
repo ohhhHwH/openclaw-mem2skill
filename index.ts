@@ -2,7 +2,18 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import fs from "fs";
 import path from "path";
 import { log, setLogPath } from "./src/logger";
-import { Processor, simpleEmbedding } from "./src/processor";
+import {
+  Processor,
+  simpleEmbedding,
+  buildLlmDependencyPrompt,
+  parseLlmDependencyResponse,
+  buildLabelDecompositionPrompt,
+  parseLabelDecompositionResponse,
+  enhanceEmbeddingWithLabels,
+  detectUserFeedback,
+  applyFeedbackToScores,
+} from "./src/processor";
+import type { LlmDependencyResult } from "./src/processor";
 import { resolveConfig } from "./src/config";
 import type { PluginConfig } from "./src/config";
 import type {
@@ -19,12 +30,38 @@ let latestQuestionTimestamp: number | null = null;
 
 let processor: Processor | null = null;
 let pluginConfig: PluginConfig | null = null;
-let lastRunId: string | null = null;
-let pendingRetrievalPrompt: string | null = null;
-let pendingRetrievalPromise: Promise<void> | null = null;
+
+// 多用户隔离：用 sessionKey/threadId 隔离每个会话的状态
+const sessionState = new Map<string, {
+  lastRunId: string | null;
+  pendingRetrievalPrompt: string | null;
+  pendingRetrievalPromise: Promise<void> | null;
+  isEvaluating: boolean;
+}>();
+
 let lastLlmProvider: string | null = null;
 let lastLlmModel: string | null = null;
-let isEvaluating = false;
+
+/** 从事件中提取会话隔离 key */
+function getSessionKey(event: any): string {
+  return event?.sessionKey ?? event?.threadId ?? event?.taskId ?? "__default__";
+}
+
+/** 获取或创建会话状态 */
+function getOrCreateSessionState(event: any) {
+  const key = getSessionKey(event);
+  let state = sessionState.get(key);
+  if (!state) {
+    state = {
+      lastRunId: null,
+      pendingRetrievalPrompt: null,
+      pendingRetrievalPromise: null,
+      isEvaluating: false,
+    };
+    sessionState.set(key, state);
+  }
+  return state;
+}
 
 function safeStr(val: any): string {
   if (val === undefined || val === null) return "";
@@ -245,13 +282,10 @@ function buildRetrievalPrompt(
   if (hits.length === 0) return "";
 
   const sections: string[] = [];
-  sections.push("[历史经验参考]");
-  sections.push("以下是与当前问题相似的历史执行记录，你可以参考其中的工具调用策略来规划当前任务。");
-  sections.push("");
 
   for (let i = 0; i < hits.length; i++) {
     const { result, graphEntry } = hits[i];
-    const similarity = result.score.toFixed(4);
+    const similarity = parseFloat(result.score.toFixed(4));
     const confidence = graphEntry ? getEvalScoreFromGraph(graphEntry) : 1;
     const historyQuestion = result.chain.userIntent;
 
@@ -262,18 +296,34 @@ function buildRetrievalPrompt(
       toolPath = result.chain.toolSequence.join(" → ");
     }
 
-    sections.push(`--- 历史记录 #${i + 1} ---`);
-    sections.push(`历史问题: ${historyQuestion}`);
-    sections.push(`相似度: ${similarity} | 结果置信度: ${confidence}`);
-    sections.push(`工具调用路径:`);
+    // 关键指标百分比化，便于 Agent 快速解读
+    const simPct = (similarity * 100).toFixed(0);
+    const confPct = (confidence * 100).toFixed(0);
+
+    sections.push("[历史经验参考]");
+    sections.push(`问题语义相似度: ${simPct}% | 历史回答质量: ${confPct}%`);
+    sections.push(`相似历史问题: "${historyQuestion}"`);
+    sections.push("");
+    sections.push("历史工具调用路径（含依赖关系与贡献度）:");
     sections.push(toolPath);
     sections.push("");
-  }
 
-  sections.push("[规划建议]");
-  sections.push("请参考上述历史工具调用路径，选择合适的工具和调用顺序来回答当前问题。如果历史路径不完全适用，可以根据当前问题的具体需求进行调整。");
-  sections.push("");
-  sections.push("以下是用户提出的原始问题:");
+    // 基于相似度 + 置信度的分层决策建议
+    sections.push("[分层决策建议]");
+    if (similarity >= 0.8 && confidence >= 0.8) {
+      sections.push("→ 高匹配: 可优先复用上述工具路径，根据当前问题的具体参数进行调整。");
+    } else if (similarity >= 0.5 && confidence >= 0.5) {
+      sections.push("→ 中等匹配: 参考上述工具选择和调用顺序，但需根据当前问题灵活调整参数与步骤。");
+    } else {
+      sections.push("→ 低匹配: 仅作思路参考，不必严格遵循上述路径，以当前问题的实际需求为主。");
+    }
+    sections.push("");
+
+    if (i < hits.length - 1) {
+      sections.push("---");
+      sections.push("");
+    }
+  }
 
   return sections.join("\n");
 }
@@ -281,15 +331,37 @@ function buildRetrievalPrompt(
 // ---- LLM 评估：对用户问题和最终回答进行评分 ----
 
 function buildEvalPrompt(userQuestion: string, finalAnswer: string): string {
-  return (
-    `请根据以下用户输入的问题和最终回答，判断回答的准确性和相关性，并给出一个0-1之间的评分，` +
-    `0表示完全不相关或错误，1表示完全相关且正确。` +
-    `用户输入的问题是：${userQuestion}，最终回答是：${finalAnswer}。` +
-    `最终回答只给出一个评分，不需要其他解释或信息。`
-  );
+  return [
+    "请从以下三个维度对 AI 助手的回答质量进行评分（每项 0-1 分）：",
+    "1. accuracy（准确性）：回答内容是否准确、正确回答了用户问题",
+    "2. speed（速度满意度）：基于回答长度和复杂度，是否在合理时间内给出了有效回答",
+    "3. format（格式可读性）：回答的排版、结构是否清晰易读",
+    "",
+    `用户问题: ${userQuestion}`,
+    `AI 回答: ${finalAnswer}`,
+    "",
+    "请以 JSON 格式回复，只包含评分，不要其他内容：",
+    '{"accuracy": 0.X, "speed": 0.X, "format": 0.X, "overall": 0.X}',
+  ].join("\n");
 }
 
 function parseEvalScore(text: string): number | null {
+  // 优先尝试 JSON 解析（多维度评分）
+  const jsonMatch = text.match(/\{[\s\S]*"accuracy"[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const scores: number[] = [];
+      if (typeof parsed.accuracy === "number") scores.push(parsed.accuracy);
+      if (typeof parsed.speed === "number") scores.push(parsed.speed);
+      if (typeof parsed.format === "number") scores.push(parsed.format);
+      if (typeof parsed.overall === "number") scores.push(parsed.overall);
+      if (scores.length > 0) {
+        return Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 1000) / 1000;
+      }
+    } catch { /* fall through */ }
+  }
+  // 回退：匹配单个数字
   const match = text.match(/([01](?:\.\d+)?)/);
   if (!match) return null;
   const score = parseFloat(match[1]);
@@ -468,6 +540,124 @@ async function evaluateWithLlm(
   return null;
 }
 
+// ---- LLM 依赖检测：用 LLM 分析 tool call 间依赖关系及每个 tool call 的质量 ----
+
+async function detectDependenciesWithLlm(
+  toolNodes: any[],
+  userQuestion: string,
+  pluginConfig: PluginConfig,
+  api: any,
+  ctx?: any,
+): Promise<LlmDependencyResult | null> {
+  if (toolNodes.length < 2) return null;
+
+  const prompt = buildLlmDependencyPrompt(toolNodes, userQuestion);
+  if (!prompt) return null;
+
+  let text: string | null = null;
+
+  // 优先使用 OpenClaw runtime 内置 LLM 调用
+  if (typeof api?.runtime?.agent?.runEmbeddedPiAgent === "function") {
+    try {
+      const sessionId = `llm-dep-${Date.now()}`;
+      const rawConfig = api.config ?? {};
+      const agentId = ctx?.agentId ?? "main";
+      const agentsConfig = rawConfig?.agents?.defaults ?? {};
+
+      const workspaceDir =
+        ctx?.workspaceDir ?? agentsConfig?.workspace ?? rawConfig?.workspaceDir ?? process.cwd();
+
+      let agentDir: string | undefined;
+      try {
+        agentDir = api.runtime.agent.resolveAgentDir?.(rawConfig, agentId);
+      } catch {}
+      if (!agentDir) {
+        agentDir = path.join(path.dirname(workspaceDir), "agents", agentId, "agent");
+      }
+
+      const provider = ctx?.modelProviderId ?? lastLlmProvider ?? "miaoda";
+      const model = ctx?.modelId ?? lastLlmModel ?? "miaoda-model-flash";
+
+      const result = await api.runtime.agent.runEmbeddedPiAgent({
+        sessionId,
+        sessionKey: ctx?.sessionKey ?? "llm-dep",
+        agentId,
+        messageProvider: ctx?.messageProvider,
+        messageChannel: ctx?.channelId,
+        sessionFile: path.join(agentDir, `llm-dep-${sessionId}.json`),
+        workspaceDir,
+        agentDir,
+        config: rawConfig,
+        prompt,
+        provider,
+        model,
+        timeoutMs: 30000,
+        runId: sessionId,
+        trigger: "manual",
+        toolsAllow: [],
+        disableTools: true,
+        disableMessageTool: true,
+        bootstrapContextMode: "lightweight",
+        verboseLevel: "off",
+        reasoningLevel: "off",
+        silentExpected: true,
+      });
+
+      text = (result?.payloads ?? [])
+        .map((p: any) => p?.text?.trim?.() ?? "")
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+    } catch (err: any) {
+      log("llm_dep", "runtime detection error", { error: String(err) });
+    }
+  }
+
+  // 回退到 fetch
+  if (!text && pluginConfig.llmApiUrl && pluginConfig.llmApiKey) {
+    try {
+      const response = await fetch(pluginConfig.llmApiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${pluginConfig.llmApiKey}`,
+        },
+        body: JSON.stringify({
+          model: pluginConfig.llmModel ?? "gpt-4o-mini",
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: 1000,
+          temperature: 0.1,
+        }),
+      });
+      const data: any = await response.json();
+      text =
+        data?.choices?.[0]?.message?.content?.trim?.() ??
+        data?.response?.trim?.() ??
+        "";
+    } catch (err: any) {
+      log("llm_dep", "fetch detection error", { error: String(err) });
+    }
+  }
+
+  if (!text) {
+    log("llm_dep", "skipped: no LLM available", {
+      hasRuntime: typeof api?.runtime?.agent?.runEmbeddedPiAgent === "function",
+      hasApiUrl: !!pluginConfig.llmApiUrl,
+    });
+    return null;
+  }
+
+  const parsed = parseLlmDependencyResponse(text, toolNodes.length);
+  if (parsed) {
+    log("llm_dep", "LLM dependency detection complete", {
+      userQuestion: userQuestion.slice(0, 100),
+      depCount: parsed.dependencies.length,
+      scores: parsed.scores,
+    });
+  }
+  return parsed;
+}
+
 // ---- 图谱数据导出 ----
 
 function ensureDir(dir: string): void {
@@ -578,6 +768,7 @@ export default definePluginEntry({
 
     // ---- message_received: 检索历史事件链，构建 prompt 注入 ----
     api.on("message_received", async (event: any) => {
+      const session = getOrCreateSessionState(event);
       const content =
         typeof event === "string"
           ? event
@@ -598,6 +789,34 @@ export default definePluginEntry({
 
       if (content.startsWith("/")) return;
       if (!processor || !pluginConfig) return;
+
+      // 检测用户反馈：如果本次消息包含对上一次回答的评价，更新对应 chain 的评分
+      const feedback = detectUserFeedback(content);
+      if (feedback) {
+        const lastSaved = processor.getLastSavedGraph();
+        if (lastSaved) {
+          const outcomeNode = lastSaved.nodes.find((n) => n.type === "Outcome");
+          const existingScores = (outcomeNode?.properties?.evalDimensions ?? {}) as Record<string, number>;
+          const updatedScores = applyFeedbackToScores(existingScores, feedback);
+          if (outcomeNode) {
+            outcomeNode.properties.evalDimensions = updatedScores;
+            outcomeNode.properties.userFeedback = {
+              polarity: feedback.polarity,
+              source: content.slice(0, 200),
+              timestamp: questionTimestamp,
+            };
+            // 异步更新已保存的图谱
+            processor.saveGraph(lastSaved.chainId, lastSaved.nodes, lastSaved.rels).catch(() => {});
+          }
+          log("user_feedback", "user feedback detected", {
+            polarity: feedback.polarity,
+            dimensions: feedback.dimensions,
+            confidence: feedback.confidence,
+            updatedScores,
+            chainId: lastSaved.chainId,
+          });
+        }
+      }
 
       const retrievalWork = (async () => {
         try {
@@ -648,25 +867,26 @@ export default definePluginEntry({
           });
 
           if (prompt) {
-            pendingRetrievalPrompt = prompt;
+            session.pendingRetrievalPrompt = prompt;
           }
         } catch (err: any) {
           log("error", "retrieval failed", { error: String(err) });
         }
       })();
 
-      pendingRetrievalPromise = retrievalWork;
+      session.pendingRetrievalPromise = retrievalWork;
     });
 
     // ---- before_prompt_build: 将检索到的事件链注入 agent 上下文 ----
     api.on("before_prompt_build", async (_event: any) => {
-      if (pendingRetrievalPromise) {
-        await pendingRetrievalPromise;
-        pendingRetrievalPromise = null;
+      const session = getOrCreateSessionState(_event);
+      if (session.pendingRetrievalPromise) {
+        await session.pendingRetrievalPromise;
+        session.pendingRetrievalPromise = null;
       }
-      if (pendingRetrievalPrompt) {
-        const prompt = pendingRetrievalPrompt;
-        pendingRetrievalPrompt = null;
+      if (session.pendingRetrievalPrompt) {
+        const prompt = session.pendingRetrievalPrompt;
+        session.pendingRetrievalPrompt = null;
         log("retrieval", "injecting prompt via before_prompt_build", {
           length: prompt.length,
         });
@@ -687,7 +907,10 @@ export default definePluginEntry({
         );
         runId = parsed.runId ?? parsed.ctx?.MessageSid;
       } catch { }
-      if (runId) lastRunId = runId;
+      if (runId) {
+        const session = getOrCreateSessionState(event);
+        session.lastRunId = runId;
+      }
 
       // 将 event 中 BodyForAgent 末尾加上 Prompt 注入的内容，方便后续分析
       /*
@@ -719,7 +942,8 @@ export default definePluginEntry({
 
     // ---- llm_output: 纯日志记录 + 捕获 provider/model ----
     api.on("llm_output", (event: any) => {
-      if (isEvaluating) return;
+      const session = getOrCreateSessionState(event);
+      if (session.isEvaluating) return;
       if (event?.provider) lastLlmProvider = event.provider;
       if (event?.model) lastLlmModel = event.model;
 
@@ -736,7 +960,8 @@ export default definePluginEntry({
 
     // ---- agent_end: 建图 + 后台导出/评估（不阻塞主流程） ----
     api.on("agent_end", async (event: any, ctx: any) => {
-      if (isEvaluating) return;
+      const agentSession = getOrCreateSessionState(event);
+      if (agentSession.isEvaluating) return;
       rememberLatestQuestionForEvent(event);
       const rawMessages = event?.messages ?? event?.event?.messages;
       const { messages: cleanedMessages, questionTimestamp } =
@@ -761,7 +986,7 @@ export default definePluginEntry({
       if (!processor || !pluginConfig) return;
 
       try {
-        const resolvedRunId = event?.runId ?? event?.taskId ?? lastRunId;
+        const resolvedRunId = event?.runId ?? event?.taskId ?? agentSession.lastRunId;
 
         const agentEndEvent = {
           time: Date.now(),
@@ -781,12 +1006,13 @@ export default definePluginEntry({
           chainId: saved?.chainId,
         });
 
-        lastRunId = null;
+        agentSession.lastRunId = null;
 
         // 后台执行：导出 + LLM 评估，不阻塞 agent_end 返回
         if (saved) {
           const capturedConfig = pluginConfig!;
           const capturedProcessor = processor;
+          const capturedSession = agentSession;
           setImmediate(async () => {
             try {
               exportEventChainData(saved.chain, capturedConfig);
@@ -795,18 +1021,159 @@ export default definePluginEntry({
               const outcomeNode = saved.nodes.find((n) => n.type === "Outcome");
               const userQuestion = saved.chain.userIntent;
               const finalAnswer = outcomeNode?.properties?.fullText ?? "";
-              isEvaluating = true;
+
+              // 并行运行 LLM 评估、LLM 依赖检测、语义标签拆解
+              capturedSession.isEvaluating = true;
               let evalScore: number | null = null;
+              let llmDepResult: LlmDependencyResult | null = null;
+              let semanticLabels: string[] = [];
               try {
-                evalScore = await evaluateWithLlm(
+                const evalPromise = evaluateWithLlm(
                   userQuestion,
                   finalAnswer,
                   capturedConfig,
                   api,
                   ctx,
                 );
+                // LLM 依赖检测（需要 toolNodes，从 cleanedMessages 提取）
+                const depPromise = (async () => {
+                  try {
+                    // 复用 Processor 暴露的工具节点提取（通过 onAgentEnd 的副作用访问）
+                    // 直接从 saved 图谱中重建 toolNodes 的简化表示
+                    const toolCount = saved.chain.toolSequence.length;
+                    if (toolCount >= 2) {
+                      const nodesForDep = saved.nodes
+                        .filter((n) => n.type === "Action")
+                        .map((a) => ({
+                          toolName: a.label,
+                          arguments: a.properties.arguments ?? {},
+                          resultText: "",
+                          resultDetails: null,
+                          isError: a.properties.isError ?? false,
+                        }));
+                      return await detectDependenciesWithLlm(
+                        nodesForDep,
+                        userQuestion,
+                        capturedConfig,
+                        api,
+                        ctx,
+                      );
+                    }
+                    return null;
+                  } catch {
+                    return null;
+                  }
+                })();
+
+                // 语义标签拆解（并行，用于增强 embedding）
+                const labelPromise = (async () => {
+                  try {
+                    const labelPrompt = buildLabelDecompositionPrompt(userQuestion);
+                    // 复用 evaluateViaFetch / evaluateViaRuntime 的调用模式
+                    let labelText: string | null = null;
+                    // 尝试 runtime
+                    if (typeof api?.runtime?.agent?.runEmbeddedPiAgent === "function") {
+                      const rawConfig = api.config ?? {};
+                      const agentId = ctx?.agentId ?? "main";
+                      const agentsConfig = rawConfig?.agents?.defaults ?? {};
+                      const wsDir = ctx?.workspaceDir ?? agentsConfig?.workspace ?? rawConfig?.workspaceDir ?? process.cwd();
+                      let aDir: string | undefined;
+                      try { aDir = api.runtime.agent.resolveAgentDir?.(rawConfig, agentId); } catch {}
+                      if (!aDir) aDir = path.join(path.dirname(wsDir), "agents", agentId, "agent");
+                      const sid = `llm-label-${Date.now()}`;
+                      try {
+                        const res = await api.runtime.agent.runEmbeddedPiAgent({
+                          sessionId: sid, sessionKey: ctx?.sessionKey ?? "llm-label", agentId,
+                          messageProvider: ctx?.messageProvider, messageChannel: ctx?.channelId,
+                          sessionFile: path.join(aDir, `llm-label-${sid}.json`),
+                          workspaceDir: wsDir, agentDir: aDir, config: rawConfig,
+                          prompt: labelPrompt,
+                          provider: ctx?.modelProviderId ?? lastLlmProvider ?? "miaoda",
+                          model: ctx?.modelId ?? lastLlmModel ?? "miaoda-model-flash",
+                          timeoutMs: 15000, runId: sid, trigger: "manual",
+                          toolsAllow: [], disableTools: true, disableMessageTool: true,
+                          bootstrapContextMode: "lightweight", verboseLevel: "off",
+                          reasoningLevel: "off", silentExpected: true,
+                        });
+                        labelText = (res?.payloads ?? []).map((p: any) => p?.text?.trim?.() ?? "").filter(Boolean).join("\n").trim();
+                      } catch {}
+                    }
+                    if (!labelText && capturedConfig.llmApiUrl && capturedConfig.llmApiKey) {
+                      try {
+                        const resp = await fetch(capturedConfig.llmApiUrl, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${capturedConfig.llmApiKey}` },
+                          body: JSON.stringify({ model: capturedConfig.llmModel ?? "gpt-4o-mini", messages: [{ role: "user", content: labelPrompt }], max_tokens: 200, temperature: 0.1 }),
+                        });
+                        const d: any = await resp.json();
+                        labelText = d?.choices?.[0]?.message?.content?.trim?.() ?? d?.response?.trim?.() ?? "";
+                      } catch {}
+                    }
+                    if (labelText) {
+                      const labels = parseLabelDecompositionResponse(labelText);
+                      if (labels.length > 0) {
+                        log("llm_label", "semantic labels extracted", { userQuestion: userQuestion.slice(0, 100), labels });
+                        return labels;
+                      }
+                    }
+                    return [];
+                  } catch { return []; }
+                })();
+
+                evalScore = await evalPromise;
+                llmDepResult = await depPromise;
+                semanticLabels = await labelPromise;
               } finally {
-                isEvaluating = false;
+                capturedSession.isEvaluating = false;
+              }
+
+              // 应用语义标签增强 chain embedding（提升后续检索质量）
+              if (semanticLabels.length > 0) {
+                const enhanced = enhanceEmbeddingWithLabels(saved.chain.embedding, semanticLabels);
+                saved.chain.embedding = enhanced;
+                // 持久化增强后的 chain（提升后续相似检索精度）
+                await capturedProcessor.saveChain(saved.chain);
+                // 更新 Intent 节点标签属性
+                const intentNode = saved.nodes.find((n) => n.type === "Intent");
+                if (intentNode) {
+                  intentNode.properties.labels = semanticLabels;
+                }
+              }
+
+              // 应用 LLM 依赖检测结果到图谱
+              if (llmDepResult && llmDepResult.dependencies.length > 0) {
+                const actionNodes = saved.nodes.filter((n) => n.type === "Action");
+                const toolNodesForApply = actionNodes.map((a) => ({
+                  toolCallId: a.properties.toolCallId ?? "",
+                  toolName: a.label,
+                  arguments: a.properties.arguments ?? {},
+                  resultText: "",
+                  resultDetails: null,
+                  isError: a.properties.isError ?? false,
+                }));
+                const llmRels = capturedProcessor.applyLlmDependencies(
+                  llmDepResult,
+                  toolNodesForApply as any,
+                  actionNodes,
+                );
+                // 合并 DEPENDS_ON：用 LLM 结果替换/补充 LCS 检测（去重）
+                const existingDepKeys = new Set(
+                  saved.rels
+                    .filter((r) => r.type === "DEPENDS_ON")
+                    .map((r) => `${r.from[0]}->${r.to[0]}`),
+                );
+                for (const rel of llmRels) {
+                  const key = `${rel.from[0]}->${rel.to[0]}`;
+                  if (!existingDepKeys.has(key)) {
+                    saved.rels.push(rel);
+                  }
+                }
+                log("llm_dep", "LLM dependencies applied to graph", {
+                  chainId: saved.chainId,
+                  lcsDepCount: saved.rels.filter((r) => r.type === "DEPENDS_ON").length - llmRels.length,
+                  llmDepCount: llmRels.length,
+                  totalDepCount: saved.rels.filter((r) => r.type === "DEPENDS_ON").length,
+                });
               }
 
               if (evalScore !== null && outcomeNode) {

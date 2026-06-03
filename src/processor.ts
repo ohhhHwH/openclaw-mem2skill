@@ -8,15 +8,224 @@ import type {
   RetrievalResult,
   StorageConfig,
 } from "./types";
-export type { GraphNode, GraphRelationship, EventChain, RetrievalResult };
 
+// ---- 类型重导出，方便外部统一 import ----
+export type { EventChain, GraphNode, GraphRelationship, MEvent, RetrievalResult, StorageConfig };
+
+// ---- 统一的处理结果类型 ----
+export interface QueryResult {
+  /** 新建或匹配到的事件链 */
+  chain: EventChain;
+  /** 相似历史事件链列表（已按分数降序排序） */
+  similar: RetrievalResult[];
+}
+
+export interface GraphBuildResult {
+  chain: EventChain;
+  nodes: GraphNode[];
+  rels: GraphRelationship[];
+}
+
+/**
+ * 字符频率向量 embedding（改进版：bigram 加权）。
+ * 单字符 + 双字符 bigram 混合编码，提升语义区分度。
+ * 对于中文文本，bigram 能捕捉词汇级别的特征。
+ */
 export function simpleEmbedding(text: string, dim: number = 64): number[] {
   const vec = new Array(dim).fill(0);
+
+  // 单字符编码
   for (let i = 0; i < text.length; i++) {
-    vec[i % dim] += text.charCodeAt(i);
+    vec[i % dim] += text.charCodeAt(i) * 0.6;
   }
+
+  // bigram 编码（加权更高，捕捉局部语义）
+  for (let i = 0; i < text.length - 1; i++) {
+    const bigram = text.charCodeAt(i) * 31 + text.charCodeAt(i + 1);
+    vec[bigram % dim] += 1.0;
+  }
+
   const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
   return vec.map((v) => v / norm);
+}
+
+/**
+ * 用语义标签增强 embedding。
+ * 标签维度权重更高，使标签化的语义特征在检索中占主导。
+ */
+export function enhanceEmbeddingWithLabels(
+  baseEmbedding: number[],
+  labels: string[],
+): number[] {
+  if (labels.length === 0) return baseEmbedding;
+
+  const dim = baseEmbedding.length;
+  const enhanced = [...baseEmbedding];
+
+  for (const label of labels) {
+    // 标签直接编码到向量中，权重较高
+    for (let i = 0; i < label.length; i++) {
+      enhanced[i % dim] += label.charCodeAt(i) * 1.5;
+    }
+    // bigram 权重
+    for (let i = 0; i < label.length - 1; i++) {
+      const bigram = label.charCodeAt(i) * 31 + label.charCodeAt(i + 1);
+      enhanced[bigram % dim] += 2.0;
+    }
+  }
+
+  const norm = Math.sqrt(enhanced.reduce((s, v) => s + v * v, 0)) || 1;
+  return enhanced.map((v) => v / norm);
+}
+
+// ---- 语义标签标准化（LLM 辅助） ----
+
+/**
+ * 构建用于语义标签拆解的 LLM prompt。
+ * 将用户自然语言问题拆解为离散的标准化标签。
+ */
+export function buildLabelDecompositionPrompt(userIntent: string): string {
+  return [
+    "你是一个查询意图分析器。请将用户的自然语言问题拆解为若干个离散的标准化语义标签。",
+    "标签应捕获问题的：领域（如 leetcode/股市/天气）、操作（如 查询/计算/对比）、实体关键词。",
+    "每个标签应简洁（2-8个字），避免冗余，总数控制在3-6个。",
+    "",
+    `用户问题: ${userIntent}`,
+    "",
+    "请以 JSON 数组格式回复，不要包含其他文字：",
+    '["标签1", "标签2", "标签3"]',
+  ].join("\n");
+}
+
+/**
+ * 解析 LLM 返回的标签拆解结果。
+ * @returns 标签数组，失败返回空数组
+ */
+export function parseLabelDecompositionResponse(text: string): string[] {
+  if (!text) return [];
+
+  // 尝试匹配 JSON 数组
+  const arrMatch = text.match(/\[[\s\S]*?\]/);
+  if (!arrMatch) return [];
+
+  try {
+    const parsed = JSON.parse(arrMatch[0]);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter((item): item is string => typeof item === "string" && item.length > 0)
+        .map((s) => s.trim())
+        .filter((s) => s.length >= 1 && s.length <= 20)
+        .slice(0, 8);
+    }
+  } catch {
+    // 尝试按行解析
+    const lines = text
+      .split("\n")
+      .map((l) => l.replace(/^[\d\.\-\s]+/, "").trim())
+      .filter((l) => l.length >= 2 && l.length <= 20);
+    if (lines.length > 0) return lines.slice(0, 6);
+  }
+
+  return [];
+}
+
+// ---- 用户反馈检测（启发式） ----
+
+import type { UserFeedback } from "./types";
+
+/** 正面评价关键词 */
+const POSITIVE_KEYWORDS = [
+  "不错", "很好", "非常好", "很棒", "准确", "正确", "谢谢", "感谢", "厉害",
+  "good", "great", "thanks", "excellent", "perfect", "correct",
+];
+
+/** 负面评价关键词 */
+const NEGATIVE_KEYWORDS = [
+  "不对", "错了", "错误", "不行", "太慢", "不好", "没用", "无效", "不准",
+  "wrong", "incorrect", "bad", "slow", "useless", "invalid",
+];
+
+/** 速度相关关键词 */
+const SPEED_KEYWORDS = ["太快", "太慢", "速度", "慢", "快", "slow", "fast", "speed"];
+
+/** 格式相关关键词 */
+const FORMAT_KEYWORDS = ["格式", "排版", "清晰", "混乱", "format", "layout", "readable"];
+
+/**
+ * 从用户消息中检测对上一次回答的反馈。
+ * 使用关键词匹配 + 启发式规则，不依赖 LLM。
+ */
+export function detectUserFeedback(userMessage: string): UserFeedback | null {
+  const lower = userMessage.toLowerCase();
+
+  let polarity: "positive" | "negative" | "neutral" = "neutral";
+  let posHits = 0;
+  let negHits = 0;
+
+  for (const kw of POSITIVE_KEYWORDS) {
+    if (lower.includes(kw)) posHits++;
+  }
+  for (const kw of NEGATIVE_KEYWORDS) {
+    if (lower.includes(kw)) negHits++;
+  }
+
+  if (posHits > negHits) polarity = "positive";
+  else if (negHits > posHits) polarity = "negative";
+  else if (posHits === 0 && negHits === 0) return null; // 无评价信号
+
+  const dimensions: Array<"accuracy" | "speed" | "format"> = [];
+
+  // 准确性：默认维度（正面/负面评价通常指准确性）
+  if (negHits > 0 || posHits > 0) dimensions.push("accuracy");
+
+  // 速度维度
+  for (const kw of SPEED_KEYWORDS) {
+    if (lower.includes(kw)) {
+      dimensions.push("speed");
+      break;
+    }
+  }
+
+  // 格式维度
+  for (const kw of FORMAT_KEYWORDS) {
+    if (lower.includes(kw)) {
+      dimensions.push("format");
+      break;
+    }
+  }
+
+  return {
+    polarity,
+    dimensions: dimensions.length > 0 ? dimensions : ["accuracy"],
+    confidence: Math.min((posHits + negHits) * 0.3, 1.0),
+  };
+}
+
+/**
+ * 根据用户反馈更新已有链的评分。
+ */
+export function applyFeedbackToScores(
+  existingScores: Partial<Record<"accuracy" | "speed" | "format", number>>,
+  feedback: UserFeedback,
+): Record<string, number> {
+  const scores: Record<string, number> = { ...existingScores } as Record<string, number>;
+  const delta = feedback.polarity === "positive" ? 0.2 : -0.2;
+
+  for (const dim of feedback.dimensions) {
+    const current = scores[dim] ?? 0.5;
+    scores[dim] = Math.round(Math.min(Math.max(current + delta, 0), 1) * 1000) / 1000;
+  }
+
+  // 综合分 = 各维度加权平均
+  const dims = Object.keys(scores).filter((k) => k !== "overall");
+  if (dims.length > 0) {
+    scores.overall =
+      Math.round(
+        (dims.reduce((s, k) => s + (scores[k] ?? 0.5), 0) / dims.length) * 1000,
+      ) / 1000;
+  }
+
+  return scores;
 }
 
 function parseDataContent(event: any): any {
@@ -101,6 +310,203 @@ export class Processor {
     return this.storage.saveGraph(chainId, nodes, rels);
   }
 
+  async saveChain(chain: EventChain): Promise<void> {
+    return this.storage.saveEventChain(chain);
+  }
+
+  // ============================================================
+  // 统一对外 API
+  // ============================================================
+
+  /**
+   * 统一入口：处理用户查询
+   * 1) 创建事件链（记录 userIntent）
+   * 2) 检索相似历史事件链
+   * 3) 返回完整结果
+   *
+   * 供外部测试和扩展调用，不依赖事件系统。
+   */
+  async processQuery(
+    text: string,
+    taskId?: string,
+  ): Promise<QueryResult> {
+    const embedding = simpleEmbedding(text);
+    const similar = await this.storage.searchSimilar(embedding);
+
+    const resolvedTaskId = taskId ?? randomUUID();
+    const chain: EventChain = {
+      id: randomUUID(),
+      taskId: resolvedTaskId,
+      timestamp: Date.now(),
+      userIntent: text,
+      events: [
+        {
+          type: "user_query",
+          content: text,
+          metadata: { timestamp: Date.now() },
+        },
+      ],
+      toolSequence: [],
+      outcome: "partial",
+      embedding,
+      accessCount: 0,
+      lastAccessTime: 0,
+    };
+    this.activeChains.set(resolvedTaskId, chain);
+
+    return { chain, similar };
+  }
+
+  /**
+   * 统一入口：从 Agent messages 构建知识图谱
+   *
+   * 封装了 tool node 提取 → 建图 → 落盘 的完整流程，
+   * 供外部测试和扩展调用。
+   */
+  async buildKnowledgeGraph(
+    messages: any[],
+    options?: {
+      chainId?: string;
+      taskId?: string;
+      userIntent?: string;
+      toolSequence?: string[];
+      outcome?: "success" | "failure" | "partial";
+    },
+  ): Promise<GraphBuildResult> {
+    const chainId = options?.chainId ?? randomUUID();
+    const taskId = options?.taskId ?? chainId;
+    const userIntent = options?.userIntent ?? "";
+    const outcome = options?.outcome ?? "success";
+
+    const toolNodes = this.extractToolNodes(messages);
+    const toolSequence =
+      options?.toolSequence ?? toolNodes.map((t) => t.toolName);
+
+    const combinedText = userIntent + " " + toolSequence.join(" ");
+    const embedding = simpleEmbedding(combinedText);
+
+    const chain: EventChain = {
+      id: chainId,
+      taskId,
+      timestamp: Date.now(),
+      userIntent,
+      events: [],
+      toolSequence,
+      outcome,
+      embedding,
+      accessCount: 0,
+      lastAccessTime: 0,
+    };
+
+    // 重建 events（简化版）
+    chain.events.push({
+      type: "user_query",
+      content: userIntent,
+      metadata: { timestamp: Date.now() },
+    });
+    for (const tn of toolNodes) {
+      chain.events.push({
+        type: "tool_call",
+        content: `${tn.toolName}: ${tn.toolCallId}`,
+        metadata: {
+          toolName: tn.toolName,
+          parameters: tn.arguments,
+          result: tn.resultText,
+          success: !tn.isError,
+          timestamp: tn.timestamp ?? Date.now(),
+        },
+      });
+    }
+
+    // 构建图谱节点
+    const nodes: GraphNode[] = [];
+    const rels: GraphRelationship[] = [];
+
+    const intentNode: GraphNode = {
+      id: `intent-${chainId}`,
+      type: "Intent",
+      label: userIntent,
+      properties: { taskId },
+    };
+    nodes.push(intentNode);
+
+    const actionNodes: GraphNode[] = [];
+    for (const tn of toolNodes) {
+      const actionNode: GraphNode = {
+        id: `action-${chainId}-${tn.toolCallId}`,
+        type: "Action",
+        label: tn.toolName,
+        properties: {
+          toolCallId: tn.toolCallId,
+          arguments: tn.arguments,
+          isError: tn.isError,
+        },
+      };
+      nodes.push(actionNode);
+      actionNodes.push(actionNode);
+    }
+
+    if (actionNodes.length > 0) {
+      rels.push({
+        from: [intentNode.id],
+        to: actionNodes.map((n) => n.id),
+        type: "TRIGGERS",
+      });
+
+      if (toolNodes.length > 0) {
+        const dependsRels = this.detectDependencies(toolNodes, actionNodes);
+        rels.push(...dependsRels);
+      }
+    }
+
+    // Outcome 节点 + RESULTS_IN 权重
+    const assistantTexts = this.extractAssistantTexts(messages);
+    const answerText = assistantTexts.join("\n");
+    const outcomeLabel =
+      answerText.length <= 80 ? answerText : answerText.slice(0, 78) + "…";
+    const outcomeNode: GraphNode = {
+      id: `outcome-${chainId}`,
+      type: "Outcome",
+      label: outcomeLabel,
+      properties: {
+        fullText: answerText,
+        success: outcome === "success",
+      },
+    };
+    nodes.push(outcomeNode);
+
+    if (actionNodes.length > 0) {
+      const actionWeights: Record<string, number> = {};
+      for (let i = 0; i < actionNodes.length; i++) {
+        const tn = toolNodes[i];
+        const resultText = tn ? this.getToolResultFullText(tn) : "";
+        if (resultText.length > 0 && answerText.length > 0) {
+          const lcs = this.longestCommonSubstringLen(resultText, answerText);
+          actionWeights[actionNodes[i].id] =
+            Math.round(Math.min(lcs / resultText.length, 1) * 1000) / 1000;
+        } else {
+          actionWeights[actionNodes[i].id] = 0;
+        }
+      }
+      rels.push({
+        from: actionNodes.map((n) => n.id),
+        to: [outcomeNode.id],
+        type: "RESULTS_IN",
+        properties: { actionWeights },
+      });
+    }
+
+    // 落盘
+    await this.storage.saveEventChain(chain);
+    await this.storage.saveGraph(chainId, nodes, rels);
+
+    return { chain, nodes, rels };
+  }
+
+  // ============================================================
+  // 事件回调方法（供 hook handler 调用）
+  // ============================================================
+
   async onMessageReceived(event: any): Promise<RetrievalResult[]> {
     const text =
       event?.data?.original ??
@@ -150,6 +556,7 @@ export class Processor {
     // 已经存在以 runId 为 key 的链则直接复用
     if (this.activeChains.has(runId)) {
       this.currentRunId = runId;
+      this.registerRunId(runId, runId);
       return;
     }
 
@@ -159,6 +566,7 @@ export class Processor {
       this.activeChains.delete(this.pendingTaskId);
       existing.taskId = runId;
       this.activeChains.set(runId, existing);
+      this.registerRunId(runId, runId);
       this.pendingTaskId = null;
       this.currentRunId = runId;
       return;
@@ -189,6 +597,7 @@ export class Processor {
       lastAccessTime: 0,
     };
     this.activeChains.set(runId, chain);
+    this.registerRunId(runId, runId);
     this.currentRunId = runId;
   }
 
@@ -317,6 +726,7 @@ export class Processor {
             toolCallId: tn.toolCallId,
             arguments: tn.arguments,
             isError: tn.isError,
+            qualityScore: scoreToolCallQuality(tn),
           },
         };
         nodes.push(actionNode);
@@ -570,6 +980,64 @@ export class Processor {
     return rels;
   }
 
+  /**
+   * 将 LLM 返回的依赖检测结果转换为 DEPENDS_ON 关系。
+   * 可与 LCS 检测结果合并使用（去重）。
+   */
+  applyLlmDependencies(
+    result: LlmDependencyResult,
+    toolNodes: ToolNode[],
+    actionNodes: GraphNode[],
+  ): GraphRelationship[] {
+    const rels: GraphRelationship[] = [];
+    const existing = new Set<string>();
+
+    for (const dep of result.dependencies) {
+      const fromIdx = dep.from - 1;
+      const toIdx = dep.to - 1;
+      if (fromIdx < 0 || toIdx >= actionNodes.length) continue;
+
+      const key = `${actionNodes[fromIdx].id}->${actionNodes[toIdx].id}`;
+      if (existing.has(key)) continue;
+      existing.add(key);
+
+      // 用工具节点信息计算补充权重
+      const current = toolNodes[toIdx];
+      const prior = toolNodes[fromIdx];
+      const argValues = this.extractStringValues(current.arguments);
+      const totalArgLen = argValues.reduce((s, v) => s + v.length, 0);
+      let matchedLen = 0;
+      if (totalArgLen > 0 && prior) {
+        const priorText = this.getToolResultFullText(prior);
+        for (const val of argValues) {
+          if (val.length < 4) continue;
+          matchedLen += this.longestCommonSubstringLen(val, priorText);
+        }
+      }
+      const weight =
+        totalArgLen > 0
+          ? Math.round(Math.min(matchedLen / totalArgLen, 1) * 1000) / 1000
+          : 0.5;
+
+      rels.push({
+        from: [actionNodes[fromIdx].id],
+        to: [actionNodes[toIdx].id],
+        type: "DEPENDS_ON",
+        properties: { weight, reason: dep.reason ?? "LLM detected" },
+      });
+    }
+
+    // 将 LLM 分数写入对应 Action 节点
+    for (let i = 0; i < actionNodes.length; i++) {
+      const key = String(i + 1);
+      if (result.scores[key] !== undefined) {
+        actionNodes[i].properties.llmQualityScore = result.scores[key];
+      }
+    }
+
+    return rels;
+  }
+
   private extractStringValues(obj: any): string[] {
     const values: string[] = [];
     if (!obj) return values;
@@ -626,18 +1094,52 @@ export class Processor {
     return best;
   }
 
+  // runId → taskId 反向索引，用于快速定位 tool_call 所属链
+  private runIdToChainKey: Map<string, string> = new Map();
+
   private findChainForToolEvent(event: any): EventChain | undefined {
+    // 1. 优先通过 taskId 精确匹配
     const taskId = event?.data?.taskId;
     if (taskId && this.activeChains.has(taskId)) {
       return this.activeChains.get(taskId);
     }
-    if (this.currentRunId && this.activeChains.has(this.currentRunId)) {
-      return this.activeChains.get(this.currentRunId);
+
+    // 2. 通过 runId 匹配（tool_call 通常携带 runId）
+    const runId = event?.data?.runId ?? event?.runId;
+    if (runId) {
+      const chainKey = this.runIdToChainKey.get(runId);
+      if (chainKey && this.activeChains.has(chainKey)) {
+        return this.activeChains.get(chainKey);
+      }
+      // 直接查找以 runId 为 key 的链
+      if (this.activeChains.has(runId)) {
+        return this.activeChains.get(runId);
+      }
     }
+
+    // 3. 通过 currentRunId 匹配
+    if (this.currentRunId) {
+      if (this.activeChains.has(this.currentRunId)) {
+        return this.activeChains.get(this.currentRunId);
+      }
+      const chainKey = this.runIdToChainKey.get(this.currentRunId);
+      if (chainKey && this.activeChains.has(chainKey)) {
+        return this.activeChains.get(chainKey);
+      }
+    }
+
+    // 4. 单链回退
     if (this.activeChains.size === 1) {
       return this.activeChains.values().next().value;
     }
+
+    // 5. 最后回退（多链且无法匹配时取第一个，实际多用户场景由 sessionState 隔离避免）
     return this.activeChains.values().next().value;
+  }
+
+  /** 注册 runId → chain key 的映射，在 reply_dispatch 时调用 */
+  private registerRunId(runId: string, chainKey: string): void {
+    this.runIdToChainKey.set(runId, chainKey);
   }
 }
 
@@ -649,4 +1151,125 @@ interface ToolNode {
   resultDetails: any;
   isError: boolean;
   timestamp?: number;
+}
+
+// ---- LLM 依赖检测 prompt 构建与结果解析 ----
+
+export interface LlmDependencyResult {
+  dependencies: Array<{ from: number; to: number; reason?: string }>;
+  scores: Record<string, number>;
+}
+
+/**
+ * 构建用于 LLM 依赖检测的 prompt。
+ * 外部可在 agent_end 中调用此方法生成 prompt，再通过 evaluateViaRuntime/evaluateViaFetch 获取结果。
+ */
+export function buildLlmDependencyPrompt(
+  toolNodes: ToolNode[],
+  userIntent: string,
+): string {
+  if (toolNodes.length === 0) return "";
+
+  const callDescriptions: string[] = [];
+  for (let i = 0; i < toolNodes.length; i++) {
+    const tn = toolNodes[i];
+    const argsStr =
+      typeof tn.arguments === "string"
+        ? tn.arguments.slice(0, 200)
+        : JSON.stringify(tn.arguments).slice(0, 200);
+    const resultStr = (tn.resultText || (tn.resultDetails
+      ? JSON.stringify(tn.resultDetails)
+      : "")).slice(0, 300);
+    const errTag = tn.isError ? " [调用失败]" : "";
+
+    callDescriptions.push(
+      `工具调用 #${i + 1}: ${tn.toolName}(${argsStr})${errTag}` +
+      (resultStr ? `\n  结果摘要: ${resultStr}` : ""),
+    );
+  }
+
+  return [
+    "你正在分析一个 AI Agent 为回答用户问题而执行的一系列工具调用。",
+    "",
+    `用户问题: ${userIntent}`,
+    "",
+    "工具调用序列（按时间顺序）:",
+    ...callDescriptions,
+    "",
+    "请完成以下分析任务：",
+    "1. 识别工具调用之间的依赖关系。如果某个工具调用的参数值来源于前一个工具调用的返回结果，则标记为依赖。",
+    "2. 对每个工具调用的有效性打分（0-1），基于其返回结果是否对回答用户问题有帮助。调用失败则为 0。",
+    "",
+    "请以 JSON 格式回复，不要包含其他文字：",
+    '{',
+    '  "dependencies": [',
+    '    {"from": 1, "to": 2, "reason": "参数 URL 来自 #1 的返回结果"},',
+    '    ...',
+    '  ],',
+    '  "scores": {',
+    '    "1": 0.9,',
+    '    "2": 0.6,',
+    '    ...',
+    '  }',
+    '}',
+  ].join("\n");
+}
+
+/**
+ * 解析 LLM 返回的依赖检测结果。
+ * @returns 解析后的结构化结果，失败返回 null
+ */
+export function parseLlmDependencyResponse(
+  text: string,
+  toolCount: number,
+): LlmDependencyResult | null {
+  if (!text) return null;
+
+  // 尝试提取 JSON 块
+  const jsonMatch = text.match(/\{[\s\S]*"dependencies"[\s\S]*"scores"[\s\S]*\}/);
+  if (!jsonMatch) return null;
+
+  try {
+    const parsed = JSON.parse(jsonMatch[0]);
+    const deps: Array<{ from: number; to: number; reason?: string }> = [];
+    const scores: Record<string, number> = {};
+
+    if (Array.isArray(parsed.dependencies)) {
+      for (const dep of parsed.dependencies) {
+        const from = typeof dep.from === "number" ? dep.from : parseInt(String(dep.from), 10);
+        const to = typeof dep.to === "number" ? dep.to : parseInt(String(dep.to), 10);
+        if (from >= 1 && from <= toolCount && to >= 1 && to <= toolCount && from < to) {
+          deps.push({ from, to, reason: dep.reason });
+        }
+      }
+    }
+
+    if (parsed.scores && typeof parsed.scores === "object") {
+      for (const [key, val] of Object.entries(parsed.scores)) {
+        const num = typeof val === "number" ? val : parseFloat(String(val));
+        if (!isNaN(num) && num >= 0 && num <= 1) {
+          scores[key] = Math.round(num * 1000) / 1000;
+        }
+      }
+    }
+
+    return { dependencies: deps, scores };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 计算单个工具调用的质量分数（无 LLM 时的回退方案）。
+ * 基于 isError、结果长度等启发式指标。
+ */
+export function scoreToolCallQuality(node: ToolNode): number {
+  if (node.isError) return 0;
+  let score = 0.5;
+  const textLen = (node.resultText ?? "").length;
+  if (textLen > 500) score += 0.3;
+  else if (textLen > 100) score += 0.2;
+  else if (textLen > 0) score += 0.1;
+  if (node.resultDetails) score += 0.1;
+  return Math.round(Math.min(score, 1.0) * 1000) / 1000;
 }
